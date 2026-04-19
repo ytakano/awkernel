@@ -3,6 +3,7 @@
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, sync::Arc, vec::Vec};
 use awkernel_lib::{
     addr::Addr,
+    barrier::{bus_space_barrier, membar_sync, BUS_SPACE_BARRIER_WRITE},
     dma_pool::DMAPool,
     interrupt::IRQ,
     net::{
@@ -255,14 +256,16 @@ impl Igc {
     }
 
     fn intr(&self, irq: Option<u16>) -> Result<(), IgcDriverErr> {
-        // TODO: Handle Tx/Rx interrupts.
-
         let mut inner = self.inner.read();
         let igc_icr = read_reg(&inner.info, igc_regs::IGC_ICR)?;
-        let igc_eicr = read_reg(&inner.info, igc_regs::IGC_EICR)?;
-        if let Some(irq) = irq {
-            log::debug!("igc: irq {irq} icr=0x{igc_icr:08x} eicr=0x{igc_eicr:08x}");
+        let irq_queue = irq.and_then(|irq| inner.queue_info.irqs_to_queues.get(&irq).copied());
+
+        if let Some(que_id) = irq_queue {
+            let mut node = MCSNode::new();
+            let mut tx = inner.queue_info.que[que_id].tx.lock(&mut node);
+            inner.igc_txeof(que_id, &mut tx)?;
         }
+
         let should_poll_link = irq.is_none() && (igc_icr & igc_defines::IGC_ICR_LSC) == 0;
 
         if (igc_icr & igc_defines::IGC_ICR_LSC) != 0 {
@@ -740,6 +743,24 @@ impl IgcInner {
         let gpie = read_reg(&self.info, igc_regs::IGC_GPIE).unwrap_or(0);
         msg = format!("{msg}GPIE: {gpie:#08x}\r\n");
 
+        let ctrl = read_reg(&self.info, igc_regs::IGC_CTRL).unwrap_or(0);
+        msg = format!("{msg}CTRL: {ctrl:#08x}\r\n");
+
+        let ctrl_ext = read_reg(&self.info, igc_regs::IGC_CTRL_EXT).unwrap_or(0);
+        msg = format!("{msg}CTRL_EXT: {ctrl_ext:#08x}\r\n");
+
+        let pba = read_reg(&self.info, igc_regs::IGC_PBA).unwrap_or(0);
+        msg = format!("{msg}PBA: {pba:#08x}\r\n");
+
+        let pbs = read_reg(&self.info, igc_regs::IGC_PBS).unwrap_or(0);
+        msg = format!("{msg}PBS: {pbs:#08x}\r\n");
+
+        let rxpbs = read_reg(&self.info, igc_regs::IGC_RXPBS).unwrap_or(0);
+        msg = format!("{msg}RXPBS: {rxpbs:#08x}\r\n");
+
+        let txpbs = read_reg(&self.info, igc_regs::IGC_TXPBS).unwrap_or(0);
+        msg = format!("{msg}TXPBS: {txpbs:#08x}\r\n");
+
         let eimc = read_reg(&self.info, igc_regs::IGC_EIMC).unwrap_or(0);
         msg = format!("{msg}EIMC: {eimc:#08x}\r\n");
 
@@ -767,10 +788,40 @@ impl IgcInner {
             msg = format!("{msg}{msix_msg}");
         }
 
+        let status = read_reg(&self.info, igc_regs::IGC_STATUS).unwrap_or(0);
+        msg = format!("{msg}STATUS: {status:#08x}\r\n");
+
+        let phpm = read_reg(&self.info, igc_phy::IGC_I225_PHPM).unwrap_or(0);
+        msg = format!("{msg}PHPM: {phpm:#08x}\r\n");
+
+        let tpr = read_reg(&self.info, igc_regs::IGC_TPR).unwrap_or(0);
+        msg = format!("{msg}TPR: {tpr:#08x}\r\n");
+
+        let tpt = read_reg(&self.info, igc_regs::IGC_TPT).unwrap_or(0);
+        msg = format!("{msg}TPT: {tpt:#08x}\r\n");
+
+        let gprc = read_reg(&self.info, igc_regs::IGC_GPRC).unwrap_or(0);
+        msg = format!("{msg}GPRC: {gprc:#08x}\r\n");
+
+        let gptc = read_reg(&self.info, igc_regs::IGC_GPTC).unwrap_or(0);
+        msg = format!("{msg}GPTC: {gptc:#08x}\r\n");
+
+        let gorcl = read_reg(&self.info, igc_regs::IGC_GORCL).unwrap_or(0);
+        msg = format!("{msg}GORCL: {gorcl:#08x}\r\n");
+
+        let gotcl = read_reg(&self.info, igc_regs::IGC_GOTCL).unwrap_or(0);
+        msg = format!("{msg}GOTCL: {gotcl:#08x}\r\n");
+
+        let rnbc = read_reg(&self.info, igc_regs::IGC_RNBC).unwrap_or(0);
+        msg = format!("{msg}RNBC: {rnbc:#08x}\r\n");
+
         let rctl = read_reg(&self.info, igc_regs::IGC_RCTL).unwrap_or(0);
         msg = format!("{msg}RCTL: {rctl:#08x}\r\n");
 
         for i in 0..self.queue_info.que.len() {
+            let mut node = MCSNode::new();
+            let rx = self.queue_info.que[i].rx.lock(&mut node);
+
             let qctl = read_reg(&self.info, igc_regs::IGC_RXDCTL(i)).unwrap_or(0);
             msg = format!("{msg}RXDCTL{i}: {qctl:#08x}\r\n");
 
@@ -788,12 +839,27 @@ impl IgcInner {
 
             let rdbal = read_reg(&self.info, igc_regs::IGC_RDBAL(i)).unwrap_or(0);
             msg = format!("{msg}RDBAL{i}: {rdbal:#08x}\r\n");
+
+            let rx_desc = &rx.rx_desc_ring.as_ref()[rx.next_to_check];
+            let rx_status = unsafe { rx_desc.wb.upper.status_error };
+            let rx_length = unsafe { rx_desc.wb.upper.length };
+            let rx_vlan = unsafe { rx_desc.wb.upper.vlan };
+            msg = format!(
+                "{msg}RXSW{i}: next_to_check={} last_desc_filled={} slots={} dropped_pkts={}\r\n",
+                rx.next_to_check, rx.last_desc_filled, rx.slots, rx.dropped_pkts
+            );
+            msg = format!(
+                "{msg}RXDESC{i}: status_error=0x{rx_status:08x} length=0x{rx_length:04x} vlan=0x{rx_vlan:04x}\r\n"
+            );
         }
 
         let tctl = read_reg(&self.info, igc_regs::IGC_TCTL).unwrap_or(0);
         msg = format!("{msg}TCTL: {tctl:#08x}\r\n");
 
         for i in 0..self.queue_info.que.len() {
+            let mut node = MCSNode::new();
+            let tx = self.queue_info.que[i].tx.lock(&mut node);
+
             let qctl = read_reg(&self.info, igc_regs::IGC_TXDCTL(i)).unwrap_or(0);
             msg = format!("{msg}TXDCTL{i}: {qctl:#08x}\r\n");
 
@@ -811,6 +877,21 @@ impl IgcInner {
 
             let tdbal = read_reg(&self.info, igc_regs::IGC_TDBAL(i)).unwrap_or(0);
             msg = format!("{msg}TDBAL{i}: {tdbal:#08x}\r\n");
+
+            let tx_desc = &tx.tx_desc_ring.as_ref()[tx.next_to_clean];
+            let tx_status = unsafe { tx_desc.wb.status };
+            let tx_buffer_addr = unsafe { tx_desc.read.buffer_addr };
+            let tx_cmd_type_len = unsafe { tx_desc.read.cmd_type_len };
+            let tx_olinfo_status = unsafe { tx_desc.read.olinfo_status };
+            msg = format!(
+                "{msg}TXSW{i}: next_avail_desc={} next_to_clean={} unused={}\r\n",
+                tx.next_avail_desc,
+                tx.next_to_clean,
+                tx.igc_desc_unused()
+            );
+            msg = format!(
+                "{msg}TXDESC{i}: buffer_addr=0x{tx_buffer_addr:016x} cmd_type_len=0x{tx_cmd_type_len:08x} olinfo_status=0x{tx_olinfo_status:08x} wb_status=0x{tx_status:08x}\r\n"
+            );
         }
 
         log::debug!("igc: dump:\r\n{msg}");
@@ -869,6 +950,7 @@ impl IgcInner {
     }
 
     fn igc_txeof(&self, que_id: usize, tx: &mut Tx) -> Result<(), IgcDriverErr> {
+        membar_sync();
         let reg_tdh = read_reg(&self.info, igc_regs::IGC_TDH(que_id))? as usize;
 
         while tx.next_to_clean != reg_tdh {
@@ -930,32 +1012,16 @@ impl IgcInner {
         read.olinfo_status =
             u32::to_le((ether_frame.data.len() as u32) << IGC_ADVTXD_PAYLEN_SHIFT);
 
-        if ether_frame.data.len() >= 14 {
-            let ethertype = u16::from_be_bytes([ether_frame.data[12], ether_frame.data[13]]);
-            log::debug!(
-                "igc: tx q{que_id} len={} ethertype=0x{ethertype:04x}",
-                ether_frame.data.len()
-            );
-        } else {
-            log::debug!("igc: tx q{que_id} short frame len={}", ether_frame.data.len());
-        }
-
         tx.next_avail_desc += 1;
         if tx.next_avail_desc == tx.tx_desc_ring.as_ref().len() {
             tx.next_avail_desc = 0;
         }
 
+        // Ensure the packet payload and descriptor stores are visible before
+        // ringing the device doorbell.
+        membar_sync();
         write_reg(&self.info, igc_regs::IGC_TDT(que_id), tx.next_avail_desc as u32)?;
-
-        let tdh = read_reg(&self.info, igc_regs::IGC_TDH(que_id)).unwrap_or(0);
-        let tdt = read_reg(&self.info, igc_regs::IGC_TDT(que_id)).unwrap_or(0);
-        let status_command = self
-            .info
-            .config_space
-            .read_u32(crate::pcie::registers::STATUS_COMMAND);
-        log::debug!(
-            "igc: tx-post q{que_id} tdh=0x{tdh:04x} tdt=0x{tdt:04x} status_command=0x{status_command:08x}"
-        );
+        bus_space_barrier(BUS_SPACE_BARRIER_WRITE);
 
         Ok(())
     }
@@ -967,6 +1033,8 @@ impl IgcInner {
             return Ok(None);
         }
 
+        // Pair with the device's DMA write-back before consuming descriptor state.
+        membar_sync();
         let idx = rx.next_to_check;
         let (status_error, length, vlan) = {
             let desc = &rx.rx_desc_ring.as_ref()[idx];
@@ -1005,20 +1073,15 @@ impl IgcInner {
             }
 
             if rx.igc_rxfill()? {
+                membar_sync();
                 write_reg(&self.info, igc_regs::IGC_RDT(que_id), rx.last_desc_filled as u32)?;
+                bus_space_barrier(BUS_SPACE_BARRIER_WRITE);
             }
 
             return Ok(None);
         }
 
         let data = rx.read_buf.as_ref().unwrap().as_ref()[idx][..length].to_vec();
-
-        if data.len() >= 14 {
-            let ethertype = u16::from_be_bytes([data[12], data[13]]);
-            log::debug!("igc: rx q{que_id} len={} ethertype=0x{ethertype:04x}", data.len());
-        } else {
-            log::debug!("igc: rx q{que_id} short frame len={}", data.len());
-        }
 
         {
             let desc = &mut rx.rx_desc_ring.as_mut()[idx];
@@ -1035,7 +1098,9 @@ impl IgcInner {
         }
 
         if rx.igc_rxfill()? {
+            membar_sync();
             write_reg(&self.info, igc_regs::IGC_RDT(que_id), rx.last_desc_filled as u32)?;
+            bus_space_barrier(BUS_SPACE_BARRIER_WRITE);
         }
 
         Ok(Some(net_device::EtherFrameBuf { data, vlan }))
@@ -1157,7 +1222,9 @@ impl IgcInner {
                 self.igc_stop()?;
                 return Err(e);
             }
+            membar_sync();
             write_reg(&self.info, IGC_RDT(i), rx.last_desc_filled as u32)?;
+            bus_space_barrier(BUS_SPACE_BARRIER_WRITE);
         }
 
         igc_enable_intr(&mut self.info, msix_queuesmask, msix_linkmask)?;
@@ -1615,6 +1682,10 @@ impl Rx {
             self.slots -= 1;
 
             post = true;
+        }
+
+        if post {
+            membar_sync();
         }
 
         Ok(post)

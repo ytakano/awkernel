@@ -454,6 +454,23 @@ impl PCIeBus {
         }
     }
 
+    fn enable_bridge_forwarding(&mut self) {
+        let Some(info) = self.info.as_mut() else {
+            return;
+        };
+
+        let mut csr = info.read_status_command();
+        let before = csr;
+
+        csr.set(registers::StatusCommand::BUS_MASTER, true);
+        csr.set(registers::StatusCommand::MEMORY_SPACE, true);
+        csr.set(registers::StatusCommand::IO_SPACE, true);
+
+        if csr.bits() != before.bits() {
+            info.write_status_command(csr);
+        }
+    }
+
     fn update_bridge_info(
         &mut self,
         mut bridge_bus_number: u8,
@@ -490,6 +507,8 @@ impl PCIeBus {
     }
 
     fn attach(&mut self) {
+        self.enable_bridge_forwarding();
+
         for device in self.devices.iter_mut() {
             device.attach();
         }

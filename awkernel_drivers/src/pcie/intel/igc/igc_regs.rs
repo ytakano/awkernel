@@ -71,6 +71,7 @@ pub(super) const IGC_FCRTV: usize = 0x02460; // Flow Control Refresh Timer Value
 
 // Split and Replication Rx Control - RW
 pub(super) const IGC_RXPBS: usize = 0x02404; // Rx Packet Buffer Size - RW
+pub(super) const IGC_TXPBS: usize = 0x03404; // Tx Packet Buffer Size - RW
 
 // Shadow Ram Write Register - RW
 pub(super) const IGC_SRWR: usize = 0x12018;
