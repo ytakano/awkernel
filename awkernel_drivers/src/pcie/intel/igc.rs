@@ -189,6 +189,20 @@ pub struct Igc {
 }
 
 impl Igc {
+    fn service_queue(inner: &IgcInner, que_id: usize) -> Result<(), IgcDriverErr> {
+        {
+            let mut node = MCSNode::new();
+            let mut rx = inner.queue_info.que[que_id].rx.lock(&mut node);
+            inner.igc_rx_recv(que_id, &mut rx)?;
+        }
+
+        let mut node = MCSNode::new();
+        let mut tx = inner.queue_info.que[que_id].tx.lock(&mut node);
+        inner.igc_txeof(que_id, &mut tx)?;
+
+        Ok(())
+    }
+
     fn new(mut info: PCIeInfo) -> Result<Self, PCIeDeviceErr> {
         use PCIeDeviceErr::InitFailure;
 
@@ -264,14 +278,7 @@ impl Igc {
         let irq_queue = irq.and_then(|irq| inner.queue_info.irqs_to_queues.get(&irq).copied());
 
         if let Some(que_id) = irq_queue {
-            {
-                let mut node = MCSNode::new();
-                let mut rx = inner.queue_info.que[que_id].rx.lock(&mut node);
-                inner.igc_rx_recv(que_id, &mut rx)?;
-            }
-            let mut node = MCSNode::new();
-            let mut tx = inner.queue_info.que[que_id].tx.lock(&mut node);
-            inner.igc_txeof(que_id, &mut tx)?;
+            Self::service_queue(&inner, que_id)?;
         }
 
         let should_poll_link = irq.is_none() && (igc_icr & igc_defines::IGC_ICR_LSC) == 0;
@@ -291,6 +298,12 @@ impl Igc {
                 inner.igc_poll_link()?;
             }
             inner = self.inner.read();
+        }
+
+        if irq.is_none() {
+            for que_id in 0..inner.queue_info.que.len() {
+                Self::service_queue(&inner, que_id)?;
+            }
         }
 
         let msix_linkmask = 1 << inner.queue_info.que.len();
@@ -357,9 +370,15 @@ impl NetDevice for Igc {
             return false;
         }
 
-        let mut node = MCSNode::new();
-        let mut tx = inner.queue_info.que[0].tx.lock(&mut node);
-        inner.igc_txeof(0, &mut tx).is_ok() && tx.igc_desc_unused() > 0
+        for que_id in 0..inner.queue_info.que.len() {
+            let mut node = MCSNode::new();
+            let mut tx = inner.queue_info.que[que_id].tx.lock(&mut node);
+            if inner.igc_txeof(que_id, &mut tx).is_ok() && tx.igc_desc_unused() > 0 {
+                return true;
+            }
+        }
+
+        false
     }
 
     fn capabilities(&self) -> net_device::NetCapabilities {
@@ -1333,14 +1352,10 @@ fn igc_allocate_pci_resources(info: &mut PCIeInfo) -> Result<(Vec<IRQ>, IRQ), PC
     }
 
     let nmsix = nmsix - 1; // Give one vector to events.
-
-    // Keep the datapath on queue 0 until MSI-X/RSS bring-up is proven.
-    // This avoids receiving control traffic on a queue the minimal driver
-    // is not servicing reliably yet.
-    let nqueues = if nmsix == 0 { 0 } else { 1 };
+    let nqueues = igc_select_num_queues(nmsix as usize);
 
     // Initialize the IRQs for the Rx/Tx queues.
-    let mut irqs_queues = Vec::with_capacity(nqueues as usize);
+    let mut irqs_queues = Vec::with_capacity(nqueues);
 
     for q in 0..nqueues {
         let irq_name_rxtx = format!("{DEVICE_SHORT_NAME}-{bdf}-RxTx{q}");
@@ -1352,7 +1367,7 @@ fn igc_allocate_pci_resources(info: &mut PCIeInfo) -> Result<(Vec<IRQ>, IRQ), PC
                 }),
                 segment_number,
                 awkernel_lib::cpu::raw_cpu_id() as u32,
-                q as usize,
+                q,
             )
             .or(Err(PCIeDeviceErr::InitFailure))?;
         irq_rxtx.enable();
@@ -1383,6 +1398,25 @@ fn igc_allocate_pci_resources(info: &mut PCIeInfo) -> Result<(Vec<IRQ>, IRQ), PC
     msix.enable();
 
     Ok((irqs_queues, irq_other))
+}
+
+fn igc_select_num_queues(available_vectors: usize) -> usize {
+    let cpu_count = match awkernel_lib::cpu::num_cpu() {
+        0 => 4,
+        n => n,
+    };
+    let available = core::cmp::min(
+        core::cmp::min(available_vectors, cpu_count),
+        4,
+    );
+
+    if available >= 4 {
+        4
+    } else if available >= 2 {
+        2
+    } else {
+        1
+    }
 }
 
 fn igc_allocate_queues(
