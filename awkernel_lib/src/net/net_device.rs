@@ -222,6 +222,8 @@ pub trait NetDevice {
 
     fn add_multicast_addr(&self, addr: &[u8; 6]) -> Result<(), NetDevError>;
     fn remove_multicast_addr(&self, addr: &[u8; 6]) -> Result<(), NetDevError>;
+
+    fn debug_dump(&self) {}
 }
 
 impl Display for LinkStatus {

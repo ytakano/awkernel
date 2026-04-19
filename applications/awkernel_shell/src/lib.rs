@@ -16,6 +16,8 @@ use awkernel_async_lib::{
 use awkernel_lib::{console, sync::mutex::MCSNode, IS_STD};
 use blisp::{embedded, runtime::FFI};
 use core::time::Duration;
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 
 const SERVICE_NAME: &str = "[Awkernel] shell";
 
@@ -48,6 +50,10 @@ async fn console_handler() -> TaskResult {
         Box::new(TaskFfi),
         Box::new(InterruptFfi),
         Box::new(IfconfigFfi),
+        Box::new(NetdumpFfi),
+        Box::new(AddIpv4Ffi),
+        Box::new(Arping4Ffi),
+        Box::new(SetGateway4Ffi),
         Box::new(RebootFfi),
         Box::new(ShutdownFfi),
     ];
@@ -169,6 +175,18 @@ const CODE: &str = "(export factorial (n) (Pure (-> (Int) Int))
 (export ifconfig () (IO (-> () []))
     (ifconfig_ffi))
 
+(export netdump (interface_id) (IO (-> (Int) []))
+    (netdump_ffi interface_id))
+
+(export add_ipv4 (interface_id a b c d prefix_len) (IO (-> (Int Int Int Int Int Int) []))
+    (add_ipv4_ffi interface_id a b c d prefix_len))
+
+(export arping4 (interface_id a b c d) (IO (-> (Int Int Int Int Int) []))
+    (arping4_ffi interface_id a b c d))
+
+(export set_gateway4 (interface_id a b c d) (IO (-> (Int Int Int Int Int) []))
+    (set_gateway4_ffi interface_id a b c d))
+
 (export reboot () (IO (-> () []))
     (reboot_ffi))
 
@@ -192,6 +210,10 @@ fn help_ffi() {
     lines.push_str("(task)      ; print tasks\r\n");
     lines.push_str("(interrupt) ; print interrupt information\r\n");
     lines.push_str("(ifconfig)  ; print network interfaces\r\n");
+    lines.push_str("(netdump if); dump device registers\r\n");
+    lines.push_str("(add_ipv4 if a b c d prefix) ; add IPv4 address\r\n");
+    lines.push_str("(arping4 if a b c d)         ; send ARP request\r\n");
+    lines.push_str("(set_gateway4 if a b c d)    ; set IPv4 gateway\r\n");
     lines.push_str("(reboot)    ; reboot x86_64 systems\r\n");
     lines.push_str("(shutdown)  ; power off x86_64 systems\r\n");
 
@@ -244,6 +266,150 @@ fn ifconfig_ffi() {
     for netif in ifs.iter() {
         let msg = format!("{netif}\r\n\r\n");
         console::print(&msg);
+    }
+}
+
+#[embedded]
+fn netdump_ffi(interface_id: BigInt) {
+    let Some(interface_id) = to_u64_arg("interface_id", &interface_id) else {
+        return;
+    };
+
+    if let Err(e) = awkernel_lib::net::debug_dump_interface(interface_id) {
+        console::print(&format!("netdump failed: {e}\r\n"));
+    }
+}
+
+fn to_u64_arg(name: &str, value: &BigInt) -> Option<u64> {
+    let Some(value) = value.to_u64() else {
+        console::print(&format!("{name} must be a non-negative integer that fits in u64\r\n"));
+        return None;
+    };
+
+    Some(value)
+}
+
+fn to_u8_arg(name: &str, value: &BigInt) -> Option<u8> {
+    let Some(value) = value.to_u8() else {
+        console::print(&format!("{name} must be an integer in 0..=255\r\n"));
+        return None;
+    };
+
+    Some(value)
+}
+
+#[embedded]
+fn add_ipv4_ffi(
+    interface_id: BigInt,
+    a: BigInt,
+    b: BigInt,
+    c: BigInt,
+    d: BigInt,
+    prefix_len: BigInt,
+) {
+    let Some(interface_id) = to_u64_arg("interface_id", &interface_id) else {
+        return;
+    };
+    let Some(a) = to_u8_arg("IPv4 octet", &a) else {
+        return;
+    };
+    let Some(b) = to_u8_arg("IPv4 octet", &b) else {
+        return;
+    };
+    let Some(c) = to_u8_arg("IPv4 octet", &c) else {
+        return;
+    };
+    let Some(d) = to_u8_arg("IPv4 octet", &d) else {
+        return;
+    };
+    let Some(prefix_len) = to_u8_arg("prefix_len", &prefix_len) else {
+        return;
+    };
+
+    awkernel_lib::net::add_ipv4_addr(
+        interface_id,
+        core::net::Ipv4Addr::new(a, b, c, d),
+        prefix_len,
+    );
+}
+
+#[embedded]
+fn set_gateway4_ffi(interface_id: BigInt, a: BigInt, b: BigInt, c: BigInt, d: BigInt) {
+    let Some(interface_id) = to_u64_arg("interface_id", &interface_id) else {
+        return;
+    };
+    let Some(a) = to_u8_arg("IPv4 octet", &a) else {
+        return;
+    };
+    let Some(b) = to_u8_arg("IPv4 octet", &b) else {
+        return;
+    };
+    let Some(c) = to_u8_arg("IPv4 octet", &c) else {
+        return;
+    };
+    let Some(d) = to_u8_arg("IPv4 octet", &d) else {
+        return;
+    };
+
+    if let Err(e) = awkernel_lib::net::set_default_gateway_ipv4(
+        interface_id,
+        core::net::Ipv4Addr::new(a, b, c, d),
+    ) {
+        console::print(&format!("set_gateway4 failed: {e}\r\n"));
+    }
+}
+
+#[embedded]
+fn arping4_ffi(interface_id: BigInt, a: BigInt, b: BigInt, c: BigInt, d: BigInt) {
+    let Some(interface_id) = to_u64_arg("interface_id", &interface_id) else {
+        return;
+    };
+    let Some(a) = to_u8_arg("IPv4 octet", &a) else {
+        return;
+    };
+    let Some(b) = to_u8_arg("IPv4 octet", &b) else {
+        return;
+    };
+    let Some(c) = to_u8_arg("IPv4 octet", &c) else {
+        return;
+    };
+    let Some(d) = to_u8_arg("IPv4 octet", &d) else {
+        return;
+    };
+
+    let Ok(interface) = awkernel_lib::net::get_interface(interface_id) else {
+        console::print("arping4 failed: invalid interface\r\n");
+        return;
+    };
+
+    let Some((src_ip, _)) = interface.ipv4_addrs.first().copied() else {
+        console::print("arping4 failed: interface has no IPv4 address\r\n");
+        return;
+    };
+
+    let src_mac = interface.mac_address;
+    let target_ip = core::net::Ipv4Addr::new(a, b, c, d);
+
+    let mut frame = Vec::with_capacity(60);
+    frame.extend_from_slice(&[0xff; 6]);
+    frame.extend_from_slice(&src_mac);
+    frame.extend_from_slice(&awkernel_lib::net::ethertypes::ETHER_TYPE_ARP.to_be_bytes());
+    frame.extend_from_slice(&1u16.to_be_bytes());
+    frame.extend_from_slice(&awkernel_lib::net::ethertypes::ETHER_TYPE_IP.to_be_bytes());
+    frame.push(6);
+    frame.push(4);
+    frame.extend_from_slice(&1u16.to_be_bytes());
+    frame.extend_from_slice(&src_mac);
+    frame.extend_from_slice(&src_ip.octets());
+    frame.extend_from_slice(&[0; 6]);
+    frame.extend_from_slice(&target_ip.octets());
+    frame.resize(60, 0);
+
+    for _ in 0..64 {
+        if let Err(e) = awkernel_lib::net::raw_send(interface_id, 0, &frame) {
+            console::print(&format!("arping4 failed: {e}\r\n"));
+            break;
+        }
     }
 }
 

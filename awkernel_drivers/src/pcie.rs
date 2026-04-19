@@ -1053,6 +1053,9 @@ impl PCIeInfo {
         // Enable the device
         csr.set(registers::StatusCommand::MEMORY_SPACE, true);
         csr.set(registers::StatusCommand::IO_SPACE, true);
+        // DMA-capable endpoints need bus mastering enabled before queue
+        // descriptors can be fetched or written back.
+        csr.set(registers::StatusCommand::BUS_MASTER, true);
         self.write_status_command(csr);
 
         // map MMIO regions

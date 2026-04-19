@@ -259,6 +259,10 @@ impl Igc {
 
         let mut inner = self.inner.read();
         let igc_icr = read_reg(&inner.info, igc_regs::IGC_ICR)?;
+        let igc_eicr = read_reg(&inner.info, igc_regs::IGC_EICR)?;
+        if let Some(irq) = irq {
+            log::debug!("igc: irq {irq} icr=0x{igc_icr:08x} eicr=0x{igc_eicr:08x}");
+        }
         let should_poll_link = irq.is_none() && (igc_icr & igc_defines::IGC_ICR_LSC) == 0;
 
         if (igc_icr & igc_defines::IGC_ICR_LSC) != 0 {
@@ -278,11 +282,13 @@ impl Igc {
             inner = self.inner.read();
         }
 
+        let msix_linkmask = 1 << inner.queue_info.que.len();
+        let msix_queuesmask = (1 << inner.queue_info.que.len()) - 1;
         write_reg(&inner.info, igc_regs::IGC_IMS, igc_defines::IGC_IMS_LSC)?;
         write_reg(
             &inner.info,
             igc_regs::IGC_EIMS,
-            1 << inner.queue_info.que.len(),
+            msix_queuesmask | msix_linkmask,
         )?;
 
         Ok(())
@@ -396,6 +402,10 @@ impl NetDevice for Igc {
     fn mac_address(&self) -> [u8; 6] {
         let inner = self.inner.read();
         inner.hw.mac.addr
+    }
+
+    fn debug_dump(&self) {
+        self.inner.read().dump();
     }
 
     fn num_queues(&self) -> usize {
@@ -908,20 +918,46 @@ impl IgcInner {
 
         let desc = &mut tx.tx_desc_ring.as_mut()[idx];
         let read = unsafe { &mut desc.read };
-        read.buffer_addr = buffer_addr;
-        read.cmd_type_len = (ether_frame.data.len() as u32)
-            | IGC_TXD_DTYP_D
-            | IGC_TXD_CMD_EOP
-            | IGC_TXD_CMD_IFCS
-            | IGC_TXD_CMD_RS;
-        read.olinfo_status = 0;
+        read.buffer_addr = u64::to_le(buffer_addr);
+        read.cmd_type_len = u32::to_le(
+            (ether_frame.data.len() as u32)
+                | IGC_ADVTXD_DTYP_DATA
+                | IGC_TXD_CMD_DEXT
+                | IGC_TXD_CMD_EOP
+                | IGC_TXD_CMD_IFCS
+                | IGC_TXD_CMD_RS,
+        );
+        read.olinfo_status =
+            u32::to_le((ether_frame.data.len() as u32) << IGC_ADVTXD_PAYLEN_SHIFT);
+
+        if ether_frame.data.len() >= 14 {
+            let ethertype = u16::from_be_bytes([ether_frame.data[12], ether_frame.data[13]]);
+            log::debug!(
+                "igc: tx q{que_id} len={} ethertype=0x{ethertype:04x}",
+                ether_frame.data.len()
+            );
+        } else {
+            log::debug!("igc: tx q{que_id} short frame len={}", ether_frame.data.len());
+        }
 
         tx.next_avail_desc += 1;
         if tx.next_avail_desc == tx.tx_desc_ring.as_ref().len() {
             tx.next_avail_desc = 0;
         }
 
-        write_reg(&self.info, igc_regs::IGC_TDT(que_id), tx.next_avail_desc as u32)
+        write_reg(&self.info, igc_regs::IGC_TDT(que_id), tx.next_avail_desc as u32)?;
+
+        let tdh = read_reg(&self.info, igc_regs::IGC_TDH(que_id)).unwrap_or(0);
+        let tdt = read_reg(&self.info, igc_regs::IGC_TDT(que_id)).unwrap_or(0);
+        let status_command = self
+            .info
+            .config_space
+            .read_u32(crate::pcie::registers::STATUS_COMMAND);
+        log::debug!(
+            "igc: tx-post q{que_id} tdh=0x{tdh:04x} tdt=0x{tdt:04x} status_command=0x{status_command:08x}"
+        );
+
+        Ok(())
     }
 
     fn igc_recv(&self, que_id: usize) -> Result<Option<net_device::EtherFrameBuf>, IgcDriverErr> {
@@ -976,6 +1012,13 @@ impl IgcInner {
         }
 
         let data = rx.read_buf.as_ref().unwrap().as_ref()[idx][..length].to_vec();
+
+        if data.len() >= 14 {
+            let ethertype = u16::from_be_bytes([data[12], data[13]]);
+            log::debug!("igc: rx q{que_id} len={} ethertype=0x{ethertype:04x}", data.len());
+        } else {
+            log::debug!("igc: rx q{que_id} short frame len={}", data.len());
+        }
 
         {
             let desc = &mut rx.rx_desc_ring.as_mut()[idx];
@@ -1214,11 +1257,10 @@ fn igc_allocate_pci_resources(info: &mut PCIeInfo) -> Result<(Vec<IRQ>, IRQ), PC
 
     let nmsix = nmsix - 1; // Give one vector to events.
 
-    let nqueues = if nmsix > IGC_MAX_VECTORS {
-        IGC_MAX_VECTORS
-    } else {
-        nmsix
-    };
+    // Keep the datapath on queue 0 until MSI-X/RSS bring-up is proven.
+    // This avoids receiving control traffic on a queue the minimal driver
+    // is not servicing reliably yet.
+    let nqueues = if nmsix == 0 { 0 } else { 1 };
 
     // Initialize the IRQs for the Rx/Tx queues.
     let mut irqs_queues = Vec::with_capacity(nqueues as usize);
@@ -1684,19 +1726,23 @@ fn igc_initialize_receive_unit(
 
     if queues.len() > 1 {
         igc_initialize_rss_mapping(info, queues.len())?;
+    } else {
+        write_reg(info, IGC_MRQC, 0)?;
     }
 
-    let mut srrctl = 2048 >> IGC_SRRCTL_BSIZEPKT_SHIFT;
+    let mut rfctl = read_reg(info, IGC_RFCTL)?;
+    rfctl |= IGC_RFCTL_IPV6_EX_DIS;
+    write_reg(info, IGC_RFCTL, rfctl)?;
+
+    write_reg(info, IGC_RLPML, hw.mac.max_frame_size)?;
+
+    let srrctl_base = 2048 >> IGC_SRRCTL_BSIZEPKT_SHIFT;
     rctl |= IGC_RCTL_SZ_2048;
 
     // If TX flow control is disabled and there's > 1 queue defined,
     // enable DROP.
     //
     // This drops frames rather than hanging the RX MAC for all queues.
-    if queues.len() > 1 && matches!(sc_fc, IgcFcMode::None | IgcFcMode::RxPause) {
-        srrctl |= IGC_SRRCTL_DROP_EN;
-    }
-
     // Setup the Base and Length of the RX descriptor rings.
     for (i, q) in queues.iter().enumerate() {
         write_reg(info, IGC_RXDCTL(i), 0)?;
@@ -1706,6 +1752,10 @@ fn igc_initialize_receive_unit(
 
         let bus_addr = rxr.rx_desc_ring.get_phy_addr();
 
+        let mut srrctl = srrctl_base;
+        if queues.len() > 1 && matches!(sc_fc, IgcFcMode::None | IgcFcMode::RxPause) {
+            srrctl |= IGC_SRRCTL_DROP_EN;
+        }
         srrctl |= IGC_SRRCTL_DESCTYPE_ADV_ONEBUF;
 
         write_reg(info, IGC_RDLEN(i), rxr.rx_desc_ring.get_size() as u32)?;
