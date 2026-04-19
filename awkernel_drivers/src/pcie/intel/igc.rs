@@ -1,6 +1,7 @@
 //! This is a skelton of a PCIe device driver.
 
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, sync::Arc, vec::Vec};
+use awkernel_async_lib_verified::ringq::RingQ;
 use awkernel_lib::{
     addr::Addr,
     barrier::{bus_space_barrier, membar_sync, BUS_SPACE_BARRIER_WRITE},
@@ -76,6 +77,7 @@ const DEFAULT_ITR: u32 = 1000000000 / (MAX_INTS_PER_SEC * 256);
 const MAX_FRAME_SIZE: u32 = 9234;
 const RX_BUFFER_SIZE: usize = 4096 * 3;
 const TX_BUFFER_SIZE: usize = 2048;
+const RECV_QUEUE_SIZE: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IgcDriverErr {
@@ -105,6 +107,7 @@ struct Rx {
     rx_desc_ring: DMAPool<RxRing>,
 
     read_buf: Option<DMAPool<RxBuffer>>,
+    read_queue: RingQ<net_device::EtherFrameBuf>,
     slots: usize,
 
     // Statistics
@@ -261,6 +264,11 @@ impl Igc {
         let irq_queue = irq.and_then(|irq| inner.queue_info.irqs_to_queues.get(&irq).copied());
 
         if let Some(que_id) = irq_queue {
+            {
+                let mut node = MCSNode::new();
+                let mut rx = inner.queue_info.que[que_id].rx.lock(&mut node);
+                inner.igc_rx_recv(que_id, &mut rx)?;
+            }
             let mut node = MCSNode::new();
             let mut tx = inner.queue_info.que[que_id].tx.lock(&mut node);
             inner.igc_txeof(que_id, &mut tx)?;
@@ -421,9 +429,24 @@ impl NetDevice for Igc {
         que_id: usize,
     ) -> Result<Option<net_device::EtherFrameBuf>, net_device::NetDevError> {
         let inner = self.inner.read();
-        inner
-            .igc_recv(que_id)
-            .or(Err(net_device::NetDevError::DeviceError))
+        {
+            let mut node = MCSNode::new();
+            let mut rx = inner.queue_info.que[que_id].rx.lock(&mut node);
+            let data = rx.read_queue.pop();
+            if data.is_some() {
+                return Ok(data);
+            }
+        }
+
+        {
+            let mut node = MCSNode::new();
+            let mut rx = inner.queue_info.que[que_id].rx.lock(&mut node);
+            inner
+                .igc_rx_recv(que_id, &mut rx)
+                .or(Err(net_device::NetDevError::DeviceError))?;
+
+            Ok(rx.read_queue.pop())
+        }
     }
 
     fn send(
@@ -1026,38 +1049,44 @@ impl IgcInner {
         Ok(())
     }
 
-    fn igc_recv(&self, que_id: usize) -> Result<Option<net_device::EtherFrameBuf>, IgcDriverErr> {
-        let mut node = MCSNode::new();
-        let mut rx = self.queue_info.que[que_id].rx.lock(&mut node);
+    fn igc_rx_recv(&self, que_id: usize, rx: &mut Rx) -> Result<(), IgcDriverErr> {
         if rx.read_buf.is_none() {
-            return Ok(None);
+            return Ok(());
         }
 
-        // Pair with the device's DMA write-back before consuming descriptor state.
-        membar_sync();
-        let idx = rx.next_to_check;
-        let (status_error, length, vlan) = {
-            let desc = &rx.rx_desc_ring.as_ref()[idx];
-            let status_error = unsafe { desc.wb.upper.status_error };
-            let length = unsafe { desc.wb.upper.length as usize };
-            let vlan = if status_error & IGC_RXD_STAT_VP != 0 {
-                Some(unsafe { desc.wb.upper.vlan })
-            } else {
-                None
+        while !rx.read_queue.is_full() {
+            // Pair with the device's DMA write-back before consuming descriptor state.
+            membar_sync();
+            let idx = rx.next_to_check;
+            let (status_error, length, vlan) = {
+                let desc = &rx.rx_desc_ring.as_ref()[idx];
+                let status_error = unsafe { desc.wb.upper.status_error };
+                let length = unsafe { desc.wb.upper.length as usize };
+                let vlan = if status_error & IGC_RXD_STAT_VP != 0 {
+                    Some(unsafe { desc.wb.upper.vlan })
+                } else {
+                    None
+                };
+                (status_error, length, vlan)
             };
-            (status_error, length, vlan)
-        };
 
-        if status_error & IGC_RXD_STAT_DD == 0 {
-            return Ok(None);
-        }
+            if status_error & IGC_RXD_STAT_DD == 0 {
+                break;
+            }
 
-        if status_error & IGC_RXD_STAT_EOP == 0
-            || length == 0
-            || status_error
-                & (IGC_RXDEXT_STATERR_L4E | IGC_RXDEXT_STATERR_IPE | IGC_RXDEXT_STATERR_RXE)
-                != 0
-        {
+            let packet = if status_error & IGC_RXD_STAT_EOP == 0
+                || length == 0
+                || status_error
+                    & (IGC_RXDEXT_STATERR_L4E | IGC_RXDEXT_STATERR_IPE | IGC_RXDEXT_STATERR_RXE)
+                    != 0
+            {
+                rx.dropped_pkts += 1;
+                None
+            } else {
+                let data = rx.read_buf.as_ref().unwrap().as_ref()[idx][..length].to_vec();
+                Some(net_device::EtherFrameBuf { data, vlan })
+            };
+
             {
                 let desc = &mut rx.rx_desc_ring.as_mut()[idx];
                 let upper = unsafe { &mut desc.wb.upper };
@@ -1072,29 +1101,9 @@ impl IgcInner {
                 rx.next_to_check = 0;
             }
 
-            if rx.igc_rxfill()? {
-                membar_sync();
-                write_reg(&self.info, igc_regs::IGC_RDT(que_id), rx.last_desc_filled as u32)?;
-                bus_space_barrier(BUS_SPACE_BARRIER_WRITE);
+            if let Some(packet) = packet {
+                let _ = rx.read_queue.push(packet);
             }
-
-            return Ok(None);
-        }
-
-        let data = rx.read_buf.as_ref().unwrap().as_ref()[idx][..length].to_vec();
-
-        {
-            let desc = &mut rx.rx_desc_ring.as_mut()[idx];
-            let upper = unsafe { &mut desc.wb.upper };
-            upper.status_error = 0;
-            upper.length = 0;
-            upper.vlan = 0;
-        }
-
-        rx.slots += 1;
-        rx.next_to_check += 1;
-        if rx.next_to_check == rx.rx_desc_ring.as_ref().len() {
-            rx.next_to_check = 0;
         }
 
         if rx.igc_rxfill()? {
@@ -1103,7 +1112,7 @@ impl IgcInner {
             bus_space_barrier(BUS_SPACE_BARRIER_WRITE);
         }
 
-        Ok(Some(net_device::EtherFrameBuf { data, vlan }))
+        Ok(())
     }
 
     /// This routine disables all traffic on the adapter by issuing a
@@ -1132,6 +1141,7 @@ impl IgcInner {
             let mut node = MCSNode::new();
             let mut rx = q.rx.lock(&mut node);
             rx.read_buf = None; // Free the read buffer
+            rx.read_queue = RingQ::new(RECV_QUEUE_SIZE);
         }
 
         // Update link status.
@@ -1398,6 +1408,7 @@ fn igc_allocate_queues(
             )
             .ok_or(PCIeDeviceErr::InitFailure)?,
             read_buf: None,
+            read_queue: RingQ::new(RECV_QUEUE_SIZE),
             slots: IGC_DEFAULT_RXD,
             dropped_pkts: 0,
         });
@@ -1650,6 +1661,7 @@ impl Rx {
         // Setup our descriptor indices.
         self.next_to_check = 0;
         self.last_desc_filled = self.rx_desc_ring.as_ref().len() - 1;
+        self.read_queue = RingQ::new(RECV_QUEUE_SIZE);
 
         let read_buf = DMAPool::new(
             info.segment_group as usize,
