@@ -217,6 +217,7 @@ pub(super) const AUTONEG_ADVERTISE_SPEED_DEFAULT_2500: u16 = IGC_ALL_SPEED_DUPLE
 // Transmit Descriptor bit definitions
 pub(super) const IGC_TXD_DTYP_D: u32 = 0x00100000; // Data Descriptor
 pub(super) const IGC_TXD_DTYP_C: u32 = 0x00000000; // Context Descriptor
+pub(super) const IGC_ADVTXD_DTYP_CTXT: u32 = 0x00200000; // Advanced Context Descriptor
 pub(super) const IGC_ADVTXD_DTYP_DATA: u32 = 0x00300000; // Advanced Data Descriptor
 pub(super) const IGC_TXD_POPTS_IXSM: u32 = 0x01; // Insert IP checksum
 pub(super) const IGC_TXD_POPTS_TXSM: u32 = 0x02; // Insert TCP/UDP checksum
@@ -234,6 +235,12 @@ pub(super) const IGC_TXD_CMD_IP: u32 = 0x02000000; // IP packet
 pub(super) const IGC_TXD_CMD_TSE: u32 = 0x04000000; // TCP Seg enable
 pub(super) const IGC_TXD_EXTCMD_TSTAMP: u32 = 0x00000010; // IEEE1588 Timestamp packet
 pub(super) const IGC_ADVTXD_PAYLEN_SHIFT: u32 = 14; // Adv desc PAYLEN shift
+pub(super) const IGC_ADVTXD_MACLEN_SHIFT: u32 = 9; // Adv ctxt desc mac len shift
+pub(super) const IGC_ADVTXD_L4LEN_SHIFT: u32 = 8; // Adv ctxt desc l4 len shift
+pub(super) const IGC_ADVTXD_TUCMD_IPV4: u32 = 0x00000400; // IP Packet Type: 1=IPv4
+pub(super) const IGC_ADVTXD_TUCMD_IPV6: u32 = 0x00000000; // IP Packet Type: 0=IPv6
+pub(super) const IGC_ADVTXD_TUCMD_L4T_UDP: u32 = 0x00000000; // L4 packet type UDP
+pub(super) const IGC_ADVTXD_TUCMD_L4T_TCP: u32 = 0x00000800; // L4 packet type TCP
 
 // Transmit Control
 pub(super) const IGC_TCTL_EN: u32 = 0x00000002; // enable Tx

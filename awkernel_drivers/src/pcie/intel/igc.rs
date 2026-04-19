@@ -8,14 +8,20 @@ use awkernel_lib::{
     dma_pool::DMAPool,
     interrupt::IRQ,
     net::{
-        ether::{ETHER_ADDR_LEN, ETHER_MAX_LEN, ETHER_TYPE_VLAN},
+        ether::{
+            extract_headers, NetworkHdr, TransportHdr, ETHER_ADDR_LEN, ETHER_HDR_LEN,
+            ETHER_MAX_LEN, ETHER_TYPE_VLAN,
+        },
         multicast::MulticastAddrs,
-        net_device::{self, LinkStatus, NetCapabilities, NetDevice, NetFlags},
+        net_device::{self, LinkStatus, NetCapabilities, NetDevice, NetFlags, PacketHeaderFlags},
+        tcp::TCPHdr,
         toeplitz::stoeplitz_to_key,
+        udp::UDPHdr,
     },
     paging::PAGESIZE,
     sync::{mcs::MCSNode, mutex::Mutex, rwlock::RwLock},
 };
+use core::mem;
 use i225::{igc_get_flash_presence_i225, I225Flash, I225NoFlash};
 use igc_api::{igc_set_mac_type, igc_setup_init_funcs};
 use igc_defines::*;
@@ -114,10 +120,19 @@ struct Rx {
     dropped_pkts: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveChecksumContext {
+    None,
+    Ipv4,
+    TcpIpv4,
+    UdpIpv4,
+}
+
 struct Tx {
     next_avail_desc: usize,
     next_to_clean: usize,
     tx_desc_ring: DMAPool<TxRing>,
+    active_checksum_context: ActiveChecksumContext,
     write_buf: Option<DMAPool<TxBuffer>>,
 }
 
@@ -754,7 +769,10 @@ impl IgcInner {
             multicast_addrs: MulticastAddrs::new(),
             if_flags: NetFlags::BROADCAST | NetFlags::SIMPLEX | NetFlags::MULTICAST,
             queue_info,
-            capabilities: NetCapabilities::VLAN_MTU,
+            capabilities: NetCapabilities::VLAN_MTU
+                | NetCapabilities::CSUM_IPv4
+                | NetCapabilities::CSUM_TCPv4
+                | NetCapabilities::CSUM_UDPv4,
         }
     }
 
@@ -1028,11 +1046,22 @@ impl IgcInner {
         let mut tx = self.queue_info.que[que_id].tx.lock(&mut node);
         self.igc_txeof(que_id, &mut tx)?;
 
-        if tx.igc_desc_unused() == 0 {
+        let head = tx.next_avail_desc;
+        let (ctx_desc_count, data_cmd_type_len, data_olinfo_status) =
+            self.igc_tx_ctx_setup(&mut tx, &ether_frame, head)?;
+        let needed_desc = ctx_desc_count + 1;
+
+        if tx.igc_desc_unused() < needed_desc {
             return Ok(());
         }
 
-        let idx = tx.next_avail_desc;
+        let tx_slots = tx.tx_desc_ring.as_ref().len();
+        let mut idx = tx.next_avail_desc;
+        idx += ctx_desc_count;
+        if idx >= tx_slots {
+            idx -= tx_slots;
+        }
+
         let buffer_addr = {
             let write_buf = tx.write_buf.as_mut().ok_or(IgcDriverErr::DmaPoolAlloc)?;
             let dst = &mut write_buf.as_mut()[idx];
@@ -1043,20 +1072,13 @@ impl IgcInner {
         let desc = &mut tx.tx_desc_ring.as_mut()[idx];
         let read = unsafe { &mut desc.read };
         read.buffer_addr = u64::to_le(buffer_addr);
-        read.cmd_type_len = u32::to_le(
-            (ether_frame.data.len() as u32)
-                | IGC_ADVTXD_DTYP_DATA
-                | IGC_TXD_CMD_DEXT
-                | IGC_TXD_CMD_EOP
-                | IGC_TXD_CMD_IFCS
-                | IGC_TXD_CMD_RS,
-        );
-        read.olinfo_status =
-            u32::to_le((ether_frame.data.len() as u32) << IGC_ADVTXD_PAYLEN_SHIFT);
+        read.cmd_type_len =
+            u32::to_le((ether_frame.data.len() as u32) | data_cmd_type_len | IGC_TXD_CMD_EOP | IGC_TXD_CMD_RS);
+        read.olinfo_status = u32::to_le(data_olinfo_status);
 
-        tx.next_avail_desc += 1;
-        if tx.next_avail_desc == tx.tx_desc_ring.as_ref().len() {
-            tx.next_avail_desc = 0;
+        tx.next_avail_desc = idx + 1;
+        if tx.next_avail_desc >= tx_slots {
+            tx.next_avail_desc -= tx_slots;
         }
 
         // Ensure the packet payload and descriptor stores are visible before
@@ -1066,6 +1088,94 @@ impl IgcInner {
         bus_space_barrier(BUS_SPACE_BARRIER_WRITE);
 
         Ok(())
+    }
+
+    fn igc_tx_ctx_setup(
+        &self,
+        tx: &mut Tx,
+        ether_frame: &net_device::EtherFrameRef,
+        head: usize,
+    ) -> Result<(usize, u32, u32), IgcDriverErr> {
+        let mut olinfo_status = (ether_frame.data.len() as u32) << IGC_ADVTXD_PAYLEN_SHIFT;
+        let cmd_type_len = IGC_ADVTXD_DTYP_DATA | IGC_TXD_CMD_DEXT | IGC_TXD_CMD_IFCS;
+        let ext = extract_headers(ether_frame.data).or(Err(IgcDriverErr::Param))?;
+
+        let (iphlen, mut type_tucmd_mlhl, checksum_context) = match ext.network {
+            NetworkHdr::Ipv4(ip) => {
+                let mut checksum_context = ActiveChecksumContext::None;
+                if ether_frame
+                    .csum_flags
+                    .contains(PacketHeaderFlags::IPV4_CSUM_OUT)
+                {
+                    olinfo_status |= IGC_TXD_POPTS_IXSM << 8;
+                    checksum_context = ActiveChecksumContext::Ipv4;
+                }
+
+                (
+                    (ip.header_len() as u32) << 2,
+                    IGC_ADVTXD_TUCMD_IPV4 | IGC_TXD_CMD_DEXT | IGC_ADVTXD_DTYP_CTXT,
+                    checksum_context,
+                )
+            }
+            NetworkHdr::Ipv6(_) | NetworkHdr::None => return Ok((0, cmd_type_len, olinfo_status)),
+        };
+
+        let mut use_offload = checksum_context != ActiveChecksumContext::None;
+        let mut checksum_context = checksum_context;
+        let mut mss_l4len_idx = 0;
+
+        match ext.transport {
+            TransportHdr::Tcp(_) => {
+                if ether_frame
+                    .csum_flags
+                    .contains(PacketHeaderFlags::TCP_CSUM_OUT)
+                {
+                    type_tucmd_mlhl |= IGC_ADVTXD_TUCMD_L4T_TCP;
+                    olinfo_status |= IGC_TXD_POPTS_TXSM << 8;
+                    mss_l4len_idx |=
+                        (mem::size_of::<TCPHdr>() as u32) << IGC_ADVTXD_L4LEN_SHIFT;
+                    checksum_context = ActiveChecksumContext::TcpIpv4;
+                    use_offload = true;
+                }
+            }
+            TransportHdr::Udp(_) => {
+                if ether_frame
+                    .csum_flags
+                    .contains(PacketHeaderFlags::UDP_CSUM_OUT)
+                {
+                    type_tucmd_mlhl |= IGC_ADVTXD_TUCMD_L4T_UDP;
+                    olinfo_status |= IGC_TXD_POPTS_TXSM << 8;
+                    mss_l4len_idx |=
+                        (mem::size_of::<UDPHdr>() as u32) << IGC_ADVTXD_L4LEN_SHIFT;
+                    checksum_context = ActiveChecksumContext::UdpIpv4;
+                    use_offload = true;
+                }
+            }
+            TransportHdr::None => {}
+        }
+
+        if !use_offload {
+            return Ok((0, cmd_type_len, olinfo_status));
+        }
+
+        if checksum_context != ActiveChecksumContext::Ipv4
+            && tx.active_checksum_context == checksum_context
+        {
+            return Ok((0, cmd_type_len, olinfo_status));
+        }
+
+        let mut vlan_macip_lens = (ETHER_HDR_LEN as u32) << IGC_ADVTXD_MACLEN_SHIFT;
+        vlan_macip_lens |= iphlen;
+
+        let ctx = unsafe { &mut tx.tx_desc_ring.as_mut()[head].adv_ctx };
+        ctx.vlan_macip_lens = u32::to_le(vlan_macip_lens);
+        ctx.ts.seqnum_seed = 0;
+        ctx.type_tucmd_mlhl = u32::to_le(type_tucmd_mlhl);
+        ctx.mss_l4len_idx = u32::to_le(mss_l4len_idx);
+
+        tx.active_checksum_context = checksum_context;
+
+        Ok((1, cmd_type_len, olinfo_status))
     }
 
     fn igc_rx_recv(&self, que_id: usize, rx: &mut Rx) -> Result<(), IgcDriverErr> {
@@ -1455,6 +1565,7 @@ fn igc_allocate_queues(
                 core::mem::size_of::<TxRing>() / PAGESIZE,
             )
             .ok_or(PCIeDeviceErr::InitFailure)?,
+            active_checksum_context: ActiveChecksumContext::None,
             write_buf: None,
         });
 
@@ -1621,6 +1732,7 @@ impl Tx {
         // Reset indices
         self.next_avail_desc = 0;
         self.next_to_clean = 0;
+        self.active_checksum_context = ActiveChecksumContext::None;
         self.write_buf = Some(
             DMAPool::new(
                 self.tx_desc_ring.get_numa_id(),
