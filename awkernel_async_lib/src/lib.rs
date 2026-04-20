@@ -9,6 +9,8 @@ extern crate alloc;
 mod accepter;
 pub mod action;
 mod anydict;
+#[cfg(feature = "baseline_trace")]
+pub mod baseline_trace;
 pub mod channel;
 pub mod dag;
 pub mod file;

@@ -35,6 +35,11 @@ use futures::{
     Future, FutureExt,
 };
 
+#[cfg(feature = "baseline_trace")]
+use crate::baseline_trace::{
+    self, BaselineTraceEvent, BaselineTraceSnapshot, BASELINE_CPU_ID,
+};
+
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -58,6 +63,100 @@ pub(crate) static NUM_TASK_IN_QUEUE: AtomicU32 = AtomicU32::new(0); // Number of
 
 static PREEMPTION_REQUEST: [AtomicBool; NUM_MAX_CPU] =
     array![_ => AtomicBool::new(false); NUM_MAX_CPU];
+
+#[cfg(feature = "baseline_trace")]
+fn baseline_current_task_id(cpu_id: usize) -> Option<u32> {
+    let id = RUNNING[cpu_id].load(Ordering::Relaxed);
+    (id != 0).then_some(id)
+}
+
+#[cfg(feature = "baseline_trace")]
+fn baseline_runnable_ids(extra_runnable: Option<u32>) -> Vec<u32> {
+    let mut runnable = Vec::new();
+
+    let mut node = MCSNode::new();
+    let tasks = TASKS.lock(&mut node);
+
+    for (&task_id, task) in tasks.id_to_task.iter() {
+        let mut node = MCSNode::new();
+        let info = task.info.lock(&mut node);
+        if info.state == State::Runnable {
+            runnable.push(task_id);
+        }
+    }
+
+    if let Some(task_id) = extra_runnable {
+        if !runnable.iter().any(|&id| id == task_id) {
+            runnable.push(task_id);
+        }
+    }
+
+    runnable.sort_unstable();
+    runnable
+}
+
+#[cfg(feature = "baseline_trace")]
+fn baseline_snapshot(
+    cpu_id: usize,
+    current: Option<u32>,
+    extra_runnable: Option<u32>,
+    need_resched: bool,
+    dispatch_target: Option<u32>,
+) -> BaselineTraceSnapshot {
+    BaselineTraceSnapshot {
+        cpu_id,
+        current,
+        runnable: baseline_runnable_ids(extra_runnable),
+        need_resched,
+        dispatch_target,
+    }
+}
+
+#[cfg(feature = "baseline_trace")]
+fn record_baseline_wakeup(task_id: u32) {
+    baseline_trace::record(
+        BaselineTraceEvent::Wakeup { task_id },
+        baseline_snapshot(BASELINE_CPU_ID, baseline_current_task_id(BASELINE_CPU_ID), Some(task_id), false, None),
+    );
+}
+
+#[cfg(feature = "baseline_trace")]
+fn record_baseline_choose(task_id: u32) {
+    baseline_trace::record(
+        BaselineTraceEvent::Choose { task_id },
+        baseline_snapshot(BASELINE_CPU_ID, None, Some(task_id), false, Some(task_id)),
+    );
+}
+
+#[cfg(feature = "baseline_trace")]
+fn record_baseline_dispatch(cpu_id: usize, task_id: u32) {
+    baseline_trace::record(
+        BaselineTraceEvent::Dispatch { task_id },
+        baseline_snapshot(cpu_id, Some(task_id), None, false, None),
+    );
+}
+
+#[cfg(feature = "baseline_trace")]
+fn record_baseline_complete(cpu_id: usize, task_id: u32) {
+    baseline_trace::record(
+        BaselineTraceEvent::Complete { task_id },
+        baseline_snapshot(cpu_id, None, None, true, None),
+    );
+}
+
+#[cfg(feature = "baseline_trace")]
+fn record_baseline_stutter(cpu_id: usize) {
+    baseline_trace::record(
+        BaselineTraceEvent::Stutter,
+        baseline_snapshot(
+            cpu_id,
+            baseline_current_task_id(cpu_id),
+            None,
+            PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed),
+            None,
+        ),
+    );
+}
 
 /// Task has ID, future, information, and a reference to a scheduler.
 pub struct Task {
@@ -136,11 +235,17 @@ impl ArcWake for Task {
 
         NUM_TASK_IN_QUEUE.fetch_add(1, Ordering::Release);
 
+        #[cfg(feature = "baseline_trace")]
+        let trace_task_id = self.id;
+
         if panicked {
             scheduler::panicked::SCHEDULER.wake_task(self);
         } else {
             self.scheduler.wake_task(self);
         }
+
+        #[cfg(feature = "baseline_trace")]
+        record_baseline_wakeup(trace_task_id);
 
         // Notify the primary CPU to wake up workers.
         awkernel_lib::cpu::wake_cpu(0);
@@ -740,6 +845,12 @@ pub fn run_main() {
         if let Some(task) = get_next_task(true) {
             PREEMPTION_REQUEST[cpu_id].store(false, Ordering::Relaxed);
 
+            #[cfg(feature = "baseline_trace")]
+            {
+                record_baseline_choose(task.id);
+                record_baseline_dispatch(cpu_id, task.id);
+            }
+
             #[cfg(not(feature = "no_preempt"))]
             {
                 // If the next task is a preempted task, then the current task will yield to the thread holding the next task.
@@ -867,6 +978,9 @@ pub fn run_main() {
                     info.state = State::Terminated;
                     drop(info);
 
+                    #[cfg(feature = "baseline_trace")]
+                    record_baseline_complete(cpu_id, task.id);
+
                     if let Err(msg) = result {
                         log::warn!("Task has been terminated but failed: {msg}");
                     }
@@ -890,6 +1004,9 @@ pub fn run_main() {
         } else {
             #[cfg(feature = "perf")]
             perf::start_idle();
+
+            #[cfg(feature = "baseline_trace")]
+            record_baseline_stutter(cpu_id);
 
             awkernel_lib::cpu::sleep_cpu(None);
         }
