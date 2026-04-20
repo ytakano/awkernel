@@ -10,10 +10,9 @@
 
 extern crate alloc;
 
-use awkernel_async_lib::{
-    scheduler::{wake_task, SchedulerType},
-    task,
-};
+use awkernel_async_lib::{scheduler::wake_task, task};
+#[cfg(not(feature = "baseline_trace_vm"))]
+use awkernel_async_lib::scheduler::SchedulerType;
 use core::{
     fmt::Debug,
     sync::atomic::{AtomicBool, AtomicU16, Ordering},
@@ -58,6 +57,10 @@ fn main<Info: Debug>(kernel_info: KernelInfo<Info>) {
         awkernel_lib::sanity::check();
 
         // Userland.
+        #[cfg(feature = "baseline_trace_vm")]
+        userland::install_baseline_trace_vm();
+
+        #[cfg(not(feature = "baseline_trace_vm"))]
         task::spawn(
             "main".into(),
             async move { userland::main().await },

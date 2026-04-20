@@ -36,9 +36,7 @@ use futures::{
 };
 
 #[cfg(feature = "baseline_trace")]
-use crate::baseline_trace::{
-    self, BaselineTraceEvent, BaselineTraceSnapshot, BASELINE_CPU_ID,
-};
+use crate::baseline_trace::{self, BaselineTraceEvent, BaselineTraceSnapshot};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -116,7 +114,7 @@ fn baseline_snapshot(
 fn record_baseline_wakeup(task_id: u32) {
     baseline_trace::record(
         BaselineTraceEvent::Wakeup { task_id },
-        baseline_snapshot(BASELINE_CPU_ID, baseline_current_task_id(BASELINE_CPU_ID), Some(task_id), false, None),
+        baseline_snapshot(0, baseline_current_task_id(0), Some(task_id), false, None),
     );
 }
 
@@ -124,7 +122,7 @@ fn record_baseline_wakeup(task_id: u32) {
 fn record_baseline_choose(task_id: u32) {
     baseline_trace::record(
         BaselineTraceEvent::Choose { task_id },
-        baseline_snapshot(BASELINE_CPU_ID, None, Some(task_id), false, Some(task_id)),
+        baseline_snapshot(awkernel_lib::cpu::cpu_id(), None, Some(task_id), false, Some(task_id)),
     );
 }
 
@@ -980,6 +978,17 @@ pub fn run_main() {
 
                     #[cfg(feature = "baseline_trace")]
                     record_baseline_complete(cpu_id, task.id);
+
+                    #[cfg(all(
+                        feature = "baseline_trace",
+                        feature = "baseline_trace_vm",
+                        target_arch = "x86_64",
+                        not(feature = "std")
+                    ))]
+                    if baseline_trace::take_dump_on_complete(task.id) {
+                        baseline_trace::dump_to_console();
+                        awkernel_lib::arch::x86_64::power::shutdown();
+                    }
 
                     if let Err(msg) = result {
                         log::warn!("Task has been terminated but failed: {msg}");

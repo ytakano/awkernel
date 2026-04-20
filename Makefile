@@ -175,6 +175,13 @@ QEMU_X86_ARGS+= -numa node,memdev=m3,cpus=12-15,nodeid=3
 # QEMU_X86_ARGS+= --trace apic_mem_writel # debug APIC
 # QEMU_X86_ARGS+= --trace "e1000e_irq_*" --trace "pci_cfg_*" # debug e1000e and PCI
 
+QEMU_X86_2CPU_ARGS= -drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd
+QEMU_X86_2CPU_ARGS+= -drive if=pflash,format=raw,file=${OVMF_PATH}/vars_qemu.fd
+QEMU_X86_2CPU_ARGS+= -drive format=raw,file=x86_64_uefi.img
+QEMU_X86_2CPU_ARGS+= -machine q35
+QEMU_X86_2CPU_ARGS+= -serial stdio -monitor telnet::5556,server,nowait
+QEMU_X86_2CPU_ARGS+= -m 2G -smp 2
+
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000
 QEMU_X86_NET_ARGS+= -device e1000e,netdev=net0,mac=12:34:56:11:22:33
@@ -205,6 +212,14 @@ debug-x86_64:
 qemu-x86_64-nographic:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 $(QEMU_X86_ARGS) -nographic
+
+qemu-x86_64-baseline-trace-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
+	qemu-system-x86_64 $(QEMU_X86_2CPU_ARGS) -nographic
+
+qemu-kvm-x86_64-baseline-trace-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
+	qemu-system-x86_64 -enable-kvm -cpu host $(QEMU_X86_2CPU_ARGS) -nographic
 
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd

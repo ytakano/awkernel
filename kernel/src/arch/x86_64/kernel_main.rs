@@ -243,6 +243,11 @@ fn kernel_main2(
         wait_forever();
     };
 
+    #[cfg(feature = "baseline_trace_vm")]
+    if let Some(raw_cpu_id) = non_primary_cpus.iter().next().copied() {
+        non_primary_cpus.retain(|cpu_id| *cpu_id == raw_cpu_id);
+    }
+
     let mut cpu_mapping = BTreeMap::<usize, usize>::new();
     for (cpu_id, raw_cpu_id) in non_primary_cpus.iter().enumerate() {
         let cpu_id = cpu_id + 1; // Non-primary CPU ID starts from 1.
