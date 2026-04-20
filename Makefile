@@ -182,6 +182,10 @@ QEMU_X86_2CPU_ARGS+= -machine q35
 QEMU_X86_2CPU_ARGS+= -serial stdio -monitor telnet::5556,server,nowait
 QEMU_X86_2CPU_ARGS+= -m 2G -smp 2
 
+BASELINE_TRACE_EXPECTED=fixtures/baseline_trace/faithful_2cpu.txt
+BASELINE_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_baseline.log
+BASELINE_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_baseline.log
+
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000
 QEMU_X86_NET_ARGS+= -device e1000e,netdev=net0,mac=12:34:56:11:22:33
@@ -220,6 +224,37 @@ qemu-x86_64-baseline-trace-2cpu:
 qemu-kvm-x86_64-baseline-trace-2cpu:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 -enable-kvm -cpu host $(QEMU_X86_2CPU_ARGS) -nographic
+
+check-baseline-trace-qemu-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
+	timeout 40s qemu-system-x86_64 \
+		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
+		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_qemu.fd \
+		-drive format=raw,file=x86_64_uefi.img \
+		-machine q35 \
+		-serial stdio -monitor none \
+		-m 2G -smp 2 -nographic | tee ${BASELINE_TRACE_QEMU_LOG}
+	python3 scripts/check_baseline_trace.py \
+		--backend qemu \
+		--expected ${BASELINE_TRACE_EXPECTED} \
+		--log ${BASELINE_TRACE_QEMU_LOG}
+
+check-baseline-trace-kvm-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_kvm.fd
+	timeout 40s qemu-system-x86_64 \
+		-enable-kvm -cpu host \
+		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
+		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_kvm.fd \
+		-drive format=raw,file=x86_64_uefi.img \
+		-machine q35 \
+		-serial stdio -monitor none \
+		-m 2G -smp 2 -nographic | tee ${BASELINE_TRACE_KVM_LOG}
+	python3 scripts/check_baseline_trace.py \
+		--backend kvm \
+		--expected ${BASELINE_TRACE_EXPECTED} \
+		--log ${BASELINE_TRACE_KVM_LOG}
+
+check-baseline-trace-2cpu: check-baseline-trace-qemu-2cpu check-baseline-trace-kvm-2cpu
 
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
