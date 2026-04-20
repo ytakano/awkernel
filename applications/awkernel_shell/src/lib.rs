@@ -282,7 +282,9 @@ fn netdump_ffi(interface_id: BigInt) {
 
 fn to_u64_arg(name: &str, value: &BigInt) -> Option<u64> {
     let Some(value) = value.to_u64() else {
-        console::print(&format!("{name} must be a non-negative integer that fits in u64\r\n"));
+        console::print(&format!(
+            "{name} must be a non-negative integer that fits in u64\r\n"
+        ));
         return None;
     };
 
