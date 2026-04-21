@@ -11,7 +11,7 @@
 extern crate alloc;
 
 use awkernel_async_lib::{scheduler::wake_task, task};
-#[cfg(not(feature = "baseline_trace_vm"))]
+#[cfg(not(any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")))]
 use awkernel_async_lib::scheduler::SchedulerType;
 use core::{
     fmt::Debug,
@@ -60,7 +60,10 @@ fn main<Info: Debug>(kernel_info: KernelInfo<Info>) {
         #[cfg(feature = "baseline_trace_vm")]
         userland::install_baseline_trace_vm();
 
-        #[cfg(not(feature = "baseline_trace_vm"))]
+        #[cfg(feature = "handoff_trace_vm")]
+        userland::install_handoff_trace_vm();
+
+        #[cfg(not(any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")))]
         task::spawn(
             "main".into(),
             async move { userland::main().await },

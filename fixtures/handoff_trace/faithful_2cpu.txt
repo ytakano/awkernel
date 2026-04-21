@@ -1,0 +1,7 @@
+BASELINE_TRACE: cpu=0 event=EvWakeup current=None runnable=[1] need_resched=false dispatch_target=None
+BASELINE_TRACE: cpu=1 event=EvRequestResched current=None runnable=[1] need_resched=true dispatch_target=None
+BASELINE_TRACE: cpu=1 event=EvHandleResched current=None runnable=[1] need_resched=true dispatch_target=None
+BASELINE_TRACE: cpu=1 event=EvChoose current=None runnable=[1] need_resched=true dispatch_target=Some(1)
+BASELINE_TRACE: cpu=1 event=EvDispatch current=Some(1) runnable=[] need_resched=false dispatch_target=None
+BASELINE_TRACE: cpu=1 event=EvComplete current=None runnable=[] need_resched=true dispatch_target=None
+BASELINE_TRACE_DONE
