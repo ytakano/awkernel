@@ -1,5 +1,13 @@
-use alloc::{format, string::{String, ToString}, vec, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use array_macro::array;
+use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
+use core::sync::atomic::AtomicU64;
 #[cfg(all(not(feature = "std"), feature = "baseline_trace_vm"))]
 use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(all(not(feature = "std"), feature = "handoff_trace_vm"))]
@@ -38,11 +46,48 @@ pub struct BaselineTraceSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineTraceRecord {
+    pub event_id: u64,
+    pub tsc: u64,
     pub event: BaselineTraceEvent,
     pub snapshot: BaselineTraceSnapshot,
 }
 
-static BASELINE_TRACE: Mutex<Vec<BaselineTraceRecord>> = Mutex::new(Vec::new());
+const TRACE_CAPACITY: usize = 128;
+
+struct TraceBuffer {
+    records: Vec<BaselineTraceRecord>,
+    overflowed: bool,
+}
+
+impl TraceBuffer {
+    const fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            overflowed: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.records.clear();
+        if self.records.capacity() < TRACE_CAPACITY {
+            self.records.reserve(TRACE_CAPACITY - self.records.capacity());
+        }
+        self.overflowed = false;
+    }
+
+    fn push(&mut self, record: BaselineTraceRecord) {
+        if self.records.len() >= TRACE_CAPACITY {
+            self.overflowed = true;
+            return;
+        }
+
+        self.records.push(record);
+    }
+}
+
+static BASELINE_TRACE: [Mutex<TraceBuffer>; NUM_MAX_CPU] =
+    array![_ => Mutex::new(TraceBuffer::new()); NUM_MAX_CPU];
+static TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(
     not(feature = "std"),
     any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")
@@ -51,23 +96,54 @@ static DUMP_ON_COMPLETE_TASK_ID: AtomicU32 = AtomicU32::new(0);
 
 #[inline(always)]
 pub fn reset() {
-    let mut node = MCSNode::new();
-    let mut trace = BASELINE_TRACE.lock(&mut node);
-    trace.clear();
+    TRACE_EVENT_ID.store(0, core::sync::atomic::Ordering::Release);
+    for trace in BASELINE_TRACE.iter() {
+        let mut node = MCSNode::new();
+        let mut trace = trace.lock(&mut node);
+        trace.reset();
+    }
 }
 
 #[inline(always)]
 pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
+    let event_id = TRACE_EVENT_ID.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    let tsc = cpu_counter();
+    let cpu_id = snapshot.cpu_id;
     let mut node = MCSNode::new();
-    let mut trace = BASELINE_TRACE.lock(&mut node);
-    trace.push(BaselineTraceRecord { event, snapshot });
+    let mut trace = BASELINE_TRACE[cpu_id].lock(&mut node);
+    trace.push(BaselineTraceRecord {
+        event_id,
+        tsc,
+        event,
+        snapshot,
+    });
+}
+
+fn merge_records(mut records: Vec<BaselineTraceRecord>) -> Vec<BaselineTraceRecord> {
+    records.sort_by(|lhs, rhs| lhs.event_id.cmp(&rhs.event_id));
+    records
 }
 
 #[inline(always)]
 pub fn records() -> Vec<BaselineTraceRecord> {
-    let mut node = MCSNode::new();
-    let trace = BASELINE_TRACE.lock(&mut node);
-    trace.clone()
+    let mut merged = Vec::new();
+
+    for trace in BASELINE_TRACE.iter() {
+        let mut node = MCSNode::new();
+        let trace = trace.lock(&mut node);
+        merged.extend(trace.records.iter().cloned());
+    }
+
+    merge_records(merged)
+}
+
+#[inline(always)]
+pub fn overflowed() -> bool {
+    BASELINE_TRACE.iter().any(|trace| {
+        let mut node = MCSNode::new();
+        let trace = trace.lock(&mut node);
+        trace.overflowed
+    })
 }
 
 pub fn render_lines() -> Vec<String> {
@@ -188,6 +264,9 @@ pub fn take_dump_on_complete(task_id: u32) -> bool {
     any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")
 ))]
 pub fn dump_to_console() {
+    if overflowed() {
+        console::print("BASELINE_TRACE_OVERFLOW\r\n");
+    }
     for line in render_lines() {
         console::print(&format!("{SERIAL_PREFIX} {line}\r\n"));
     }
@@ -319,5 +398,91 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("mkAwkernelCapturedRow 1 (EvRequestResched 1) None [1] true None"))
         );
+    }
+
+    #[test]
+    fn merge_orders_by_event_id() {
+        let merged = merge_records(vec![
+            BaselineTraceRecord {
+                event_id: 2,
+                tsc: 12,
+                event: BaselineTraceEvent::Dispatch { task_id: 2 },
+                snapshot: BaselineTraceSnapshot {
+                    cpu_id: 1,
+                    current: Some(2),
+                    runnable: vec![],
+                    need_resched: false,
+                    dispatch_target: None,
+                },
+            },
+            BaselineTraceRecord {
+                event_id: 0,
+                tsc: 10,
+                event: BaselineTraceEvent::Wakeup { task_id: 1 },
+                snapshot: BaselineTraceSnapshot {
+                    cpu_id: 0,
+                    current: None,
+                    runnable: vec![1],
+                    need_resched: false,
+                    dispatch_target: None,
+                },
+            },
+            BaselineTraceRecord {
+                event_id: 1,
+                tsc: 10,
+                event: BaselineTraceEvent::HandleResched { cpu_id: 1 },
+                snapshot: BaselineTraceSnapshot {
+                    cpu_id: 1,
+                    current: None,
+                    runnable: vec![1],
+                    need_resched: true,
+                    dispatch_target: None,
+                },
+            },
+        ]);
+
+        assert_eq!(merged[0].event_id, 0);
+        assert_eq!(merged[1].event_id, 1);
+        assert_eq!(merged[2].event_id, 2);
+        assert_eq!(merged[0].snapshot.cpu_id, 0);
+        assert_eq!(merged[1].snapshot.cpu_id, 1);
+        assert_eq!(merged[2].tsc, 12);
+    }
+
+    #[test]
+    fn marks_overflow_once_capacity_is_exceeded() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+
+        for task_id in 0..TRACE_CAPACITY as u32 {
+            record(
+                BaselineTraceEvent::Wakeup { task_id },
+                BaselineTraceSnapshot {
+                    cpu_id: 0,
+                    current: None,
+                    runnable: vec![task_id],
+                    need_resched: false,
+                    dispatch_target: None,
+                },
+            );
+        }
+
+        assert!(!overflowed());
+
+        record(
+            BaselineTraceEvent::Wakeup {
+                task_id: TRACE_CAPACITY as u32,
+            },
+            BaselineTraceSnapshot {
+                cpu_id: 0,
+                current: None,
+                runnable: vec![TRACE_CAPACITY as u32],
+                need_resched: false,
+                dispatch_target: None,
+            },
+        );
+
+        assert!(overflowed());
+        assert_eq!(records().len(), TRACE_CAPACITY);
     }
 }
