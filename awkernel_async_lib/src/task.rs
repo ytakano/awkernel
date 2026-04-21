@@ -119,10 +119,26 @@ fn record_baseline_wakeup(task_id: u32) {
 }
 
 #[cfg(feature = "baseline_trace")]
-fn record_baseline_choose(task_id: u32) {
+fn record_baseline_request_resched(cpu_id: usize) {
+    baseline_trace::record(
+        BaselineTraceEvent::RequestResched { cpu_id },
+        baseline_snapshot(cpu_id, baseline_current_task_id(cpu_id), None, true, None),
+    );
+}
+
+#[cfg(feature = "baseline_trace")]
+fn record_baseline_handle_resched(cpu_id: usize) {
+    baseline_trace::record(
+        BaselineTraceEvent::HandleResched { cpu_id },
+        baseline_snapshot(cpu_id, baseline_current_task_id(cpu_id), None, true, None),
+    );
+}
+
+#[cfg(feature = "baseline_trace")]
+fn record_baseline_choose(cpu_id: usize, task_id: u32, need_resched: bool) {
     baseline_trace::record(
         BaselineTraceEvent::Choose { task_id },
-        baseline_snapshot(awkernel_lib::cpu::cpu_id(), None, Some(task_id), false, Some(task_id)),
+        baseline_snapshot(cpu_id, None, Some(task_id), need_resched, Some(task_id)),
     );
 }
 
@@ -244,6 +260,12 @@ impl ArcWake for Task {
 
         #[cfg(feature = "baseline_trace")]
         record_baseline_wakeup(trace_task_id);
+
+        #[cfg(feature = "handoff_trace_vm")]
+        {
+            PREEMPTION_REQUEST[1].store(true, Ordering::Release);
+            record_baseline_request_resched(1);
+        }
 
         // Notify the primary CPU to wake up workers.
         awkernel_lib::cpu::wake_cpu(0);
@@ -840,12 +862,20 @@ pub fn run_main() {
             }
         }
 
+        #[cfg(feature = "handoff_trace_vm")]
+        if RUNNING[cpu_id].load(Ordering::Relaxed) == 0
+            && PREEMPTION_REQUEST[cpu_id].load(Ordering::Acquire)
+        {
+            record_baseline_handle_resched(cpu_id);
+        }
+
         if let Some(task) = get_next_task(true) {
+            let trace_need_resched = PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed);
             PREEMPTION_REQUEST[cpu_id].store(false, Ordering::Relaxed);
 
             #[cfg(feature = "baseline_trace")]
             {
-                record_baseline_choose(task.id);
+                record_baseline_choose(cpu_id, task.id, trace_need_resched);
                 record_baseline_dispatch(cpu_id, task.id);
             }
 
@@ -981,7 +1011,7 @@ pub fn run_main() {
 
                     #[cfg(all(
                         feature = "baseline_trace",
-                        feature = "baseline_trace_vm",
+                        any(feature = "baseline_trace_vm", feature = "handoff_trace_vm"),
                         target_arch = "x86_64",
                         not(feature = "std")
                     ))]

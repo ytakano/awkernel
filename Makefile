@@ -185,6 +185,10 @@ QEMU_X86_2CPU_ARGS+= -m 2G -smp 2
 BASELINE_TRACE_EXPECTED=fixtures/baseline_trace/faithful_2cpu.txt
 BASELINE_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_baseline.log
 BASELINE_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_baseline.log
+HANDOFF_TRACE_EXPECTED=fixtures/handoff_trace/faithful_2cpu.txt
+HANDOFF_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_handoff.log
+HANDOFF_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_handoff.log
+HANDOFF_TRACE_ROCQ_EXPECTED=../../../rocq/scheduling_theory/theories/Operational/Awkernel/GeneratedHandoffTraceArtifact.v
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000
@@ -221,7 +225,15 @@ qemu-x86_64-baseline-trace-2cpu:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 $(QEMU_X86_2CPU_ARGS) -nographic
 
+qemu-x86_64-handoff-trace-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
+	qemu-system-x86_64 $(QEMU_X86_2CPU_ARGS) -nographic
+
 qemu-kvm-x86_64-baseline-trace-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
+	qemu-system-x86_64 -enable-kvm -cpu host $(QEMU_X86_2CPU_ARGS) -nographic
+
+qemu-kvm-x86_64-handoff-trace-2cpu:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 -enable-kvm -cpu host $(QEMU_X86_2CPU_ARGS) -nographic
 
@@ -255,6 +267,45 @@ check-baseline-trace-kvm-2cpu:
 		--log ${BASELINE_TRACE_KVM_LOG}
 
 check-baseline-trace-2cpu: check-baseline-trace-qemu-2cpu check-baseline-trace-kvm-2cpu
+
+check-handoff-trace-qemu-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
+	timeout 40s qemu-system-x86_64 \
+		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
+		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_qemu.fd \
+		-drive format=raw,file=x86_64_uefi.img \
+		-machine q35 \
+		-serial stdio -monitor none \
+		-m 2G -smp 2 -nographic | tee ${HANDOFF_TRACE_QEMU_LOG}
+	python3 scripts/check_baseline_trace.py \
+		--backend qemu-handoff \
+		--expected ${HANDOFF_TRACE_EXPECTED} \
+		--log ${HANDOFF_TRACE_QEMU_LOG}
+	python3 scripts/check_rocq_trace_artifact.py \
+		--backend qemu-handoff \
+		--expected ${HANDOFF_TRACE_ROCQ_EXPECTED} \
+		--log ${HANDOFF_TRACE_QEMU_LOG}
+
+check-handoff-trace-kvm-2cpu:
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_kvm.fd
+	timeout 40s qemu-system-x86_64 \
+		-enable-kvm -cpu host \
+		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
+		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_kvm.fd \
+		-drive format=raw,file=x86_64_uefi.img \
+		-machine q35 \
+		-serial stdio -monitor none \
+		-m 2G -smp 2 -nographic | tee ${HANDOFF_TRACE_KVM_LOG}
+	python3 scripts/check_baseline_trace.py \
+		--backend kvm-handoff \
+		--expected ${HANDOFF_TRACE_EXPECTED} \
+		--log ${HANDOFF_TRACE_KVM_LOG}
+	python3 scripts/check_rocq_trace_artifact.py \
+		--backend kvm-handoff \
+		--expected ${HANDOFF_TRACE_ROCQ_EXPECTED} \
+		--log ${HANDOFF_TRACE_KVM_LOG}
+
+check-handoff-trace-2cpu: check-handoff-trace-qemu-2cpu check-handoff-trace-kvm-2cpu
 
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
