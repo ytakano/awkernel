@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -36,6 +38,64 @@ def extract_trace_rows_block(lines: list[str]) -> list[str]:
     return rows
 
 
+def resolve_runhaskell(command: str) -> str:
+    if "/" in command:
+        path = pathlib.Path(command)
+        if not path.is_file():
+            raise SystemExit(f"runhaskell not found: {path}")
+        return str(path)
+
+    resolved = shutil.which(command)
+    if resolved is None:
+        raise SystemExit(f"runhaskell not found in PATH: {command}")
+    return resolved
+
+
+def candidate_checker_dirs() -> list[pathlib.Path]:
+    env_candidates = [
+        os.environ.get("HANDOFF_ACCEPT_CHECKER_DIR"),
+        os.environ.get("AWKERNEL_HANDOFF_CHECKER_DIR"),
+        os.environ.get("SCHEDULING_THEORY_EXTRACTED_HASKELL_DIR"),
+    ]
+    script_path = pathlib.Path(__file__).resolve()
+    discovered: list[pathlib.Path] = []
+
+    for value in env_candidates:
+        if value:
+            discovered.append(pathlib.Path(value))
+
+    for base in [script_path.parent, *script_path.parents]:
+        discovered.append(base / "scheduling_theory" / "extracted" / "haskell")
+        discovered.append(base / "rocq" / "scheduling_theory" / "extracted" / "haskell")
+
+    unique: list[pathlib.Path] = []
+    seen: set[pathlib.Path] = set()
+    for candidate in discovered:
+        resolved = candidate.resolve(strict=False)
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
+def resolve_checker_dir(explicit: pathlib.Path | None) -> pathlib.Path:
+    candidates = [explicit] if explicit is not None else candidate_checker_dirs()
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        module_path = candidate / "AwkernelHandoffAcceptance.hs"
+        if module_path.is_file():
+            return candidate
+
+    searched = "\n".join(str(c) for c in candidate_checker_dirs())
+    raise SystemExit(
+        "extracted Haskell checker module not found. "
+        "Pass --checker-dir or set HANDOFF_ACCEPT_CHECKER_DIR.\n"
+        f"Searched:\n{searched}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the extracted Haskell handoff acceptance checker on a captured neutral trace-rows block."
@@ -44,9 +104,8 @@ def main() -> int:
     parser.add_argument("--backend", default="backend", help="Backend label for diagnostics.")
     parser.add_argument(
         "--runhaskell",
-        type=pathlib.Path,
-        default=pathlib.Path("/home/ytakano/.ghcup/bin/runhaskell"),
-        help="Path to runhaskell.",
+        default="runhaskell",
+        help="Path or command name for runhaskell.",
     )
     parser.add_argument(
         "--runner",
@@ -57,25 +116,20 @@ def main() -> int:
     parser.add_argument(
         "--checker-dir",
         type=pathlib.Path,
-        required=True,
         help="Directory containing the extracted AwkernelHandoffAcceptance module.",
     )
     args = parser.parse_args()
 
-    if not args.runhaskell.is_file():
-        raise SystemExit(f"runhaskell not found: {args.runhaskell}")
+    runhaskell = resolve_runhaskell(args.runhaskell)
     if not args.runner.is_file():
         raise SystemExit(f"Haskell runner not found: {args.runner}")
-    if not (args.checker_dir / "AwkernelHandoffAcceptance.hs").is_file():
-        raise SystemExit(
-            f"extracted Haskell checker module not found: {args.checker_dir / 'AwkernelHandoffAcceptance.hs'}"
-        )
+    checker_dir = resolve_checker_dir(args.checker_dir)
 
     rows = extract_trace_rows_block(load_lines(args.log))
     payload = "\n".join(rows) + "\n"
     cmd = [
-        str(args.runhaskell),
-        f"-i{args.checker_dir}",
+        runhaskell,
+        f"-i{checker_dir}",
         str(args.runner),
         args.backend,
     ]
