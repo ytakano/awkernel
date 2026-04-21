@@ -23,6 +23,8 @@ pub const SERIAL_PREFIX: &str = "BASELINE_TRACE:";
 pub const SERIAL_DONE_MARKER: &str = "BASELINE_TRACE_DONE";
 pub const ROCQ_BEGIN_MARKER: &str = "BEGIN_ROCQ_TRACE";
 pub const ROCQ_END_MARKER: &str = "END_ROCQ_TRACE";
+pub const TRACE_ROWS_BEGIN_MARKER: &str = "BEGIN_TRACE_ROWS";
+pub const TRACE_ROWS_END_MARKER: &str = "END_TRACE_ROWS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaselineTraceEvent {
@@ -217,6 +219,65 @@ fn render_rocq_row(record: BaselineTraceRecord) -> String {
     )
 }
 
+fn render_trace_rows_event(
+    event: BaselineTraceEvent,
+) -> (&'static str, Option<u32>, Option<u32>) {
+    match event {
+        BaselineTraceEvent::Wakeup { task_id } => ("Wakeup", Some(task_id), None),
+        BaselineTraceEvent::RequestResched { cpu_id } => {
+            ("RequestResched", Some(cpu_id as u32), None)
+        }
+        BaselineTraceEvent::HandleResched { cpu_id } => {
+            ("HandleResched", Some(cpu_id as u32), None)
+        }
+        BaselineTraceEvent::Choose { task_id } => ("Choose", Some(1), Some(task_id)),
+        BaselineTraceEvent::Dispatch { task_id } => ("Dispatch", Some(1), Some(task_id)),
+        BaselineTraceEvent::Complete { task_id } => ("Complete", Some(task_id), None),
+        BaselineTraceEvent::Stutter => ("Stutter", None, None),
+    }
+}
+
+fn render_trace_rows_option(value: Option<u32>) -> String {
+    match value {
+        Some(v) => v.to_string(),
+        None => "-".to_string(),
+    }
+}
+
+fn render_trace_rows_runnable(values: &[u32]) -> String {
+    values
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn render_trace_rows_record(record: BaselineTraceRecord) -> String {
+    let (event_tag, arg0, arg1) = render_trace_rows_event(record.event);
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        record.snapshot.cpu_id,
+        event_tag,
+        render_trace_rows_option(arg0),
+        render_trace_rows_option(arg1),
+        render_trace_rows_option(record.snapshot.current),
+        render_trace_rows_runnable(&record.snapshot.runnable),
+        if record.snapshot.need_resched {
+            "true"
+        } else {
+            "false"
+        },
+        render_trace_rows_option(record.snapshot.dispatch_target)
+    )
+}
+
+pub fn render_trace_rows_artifact_lines() -> Vec<String> {
+    records()
+        .into_iter()
+        .map(render_trace_rows_record)
+        .collect()
+}
+
 pub fn render_rocq_handoff_artifact_lines() -> Vec<String> {
     let records = records();
     let mut lines = vec![
@@ -273,6 +334,11 @@ pub fn dump_to_console() {
     console::print(&format!("{SERIAL_DONE_MARKER}\r\n"));
     #[cfg(feature = "handoff_trace_vm")]
     {
+        console::print(&format!("{TRACE_ROWS_BEGIN_MARKER}\r\n"));
+        for line in render_trace_rows_artifact_lines() {
+            console::print(&format!("{line}\r\n"));
+        }
+        console::print(&format!("{TRACE_ROWS_END_MARKER}\r\n"));
         console::print(&format!("{ROCQ_BEGIN_MARKER}\r\n"));
         for line in render_rocq_handoff_artifact_lines() {
             console::print(&format!("{line}\r\n"));
@@ -398,6 +464,37 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("mkAwkernelCapturedRow 1 (EvRequestResched 1) None [1] true None"))
         );
+    }
+
+    #[test]
+    fn renders_trace_rows_artifact() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        record(
+            BaselineTraceEvent::Choose { task_id: 1 },
+            BaselineTraceSnapshot {
+                cpu_id: 1,
+                current: None,
+                runnable: vec![1],
+                need_resched: true,
+                dispatch_target: Some(1),
+            },
+        );
+        record(
+            BaselineTraceEvent::Dispatch { task_id: 1 },
+            BaselineTraceSnapshot {
+                cpu_id: 1,
+                current: Some(1),
+                runnable: vec![],
+                need_resched: false,
+                dispatch_target: None,
+            },
+        );
+
+        let lines = render_trace_rows_artifact_lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "1\tChoose\t1\t1\t-\t1\ttrue\t1");
+        assert_eq!(lines[1], "1\tDispatch\t1\t1\t1\t\tfalse\t-");
     }
 
     #[test]

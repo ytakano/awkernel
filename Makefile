@@ -186,9 +186,13 @@ BASELINE_TRACE_EXPECTED=fixtures/baseline_trace/faithful_2cpu.txt
 BASELINE_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_baseline.log
 BASELINE_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_baseline.log
 HANDOFF_TRACE_EXPECTED=fixtures/handoff_trace/faithful_2cpu.txt
+HANDOFF_TRACE_ROWS_EXPECTED=fixtures/handoff_trace/faithful_2cpu_rows.tsv
 HANDOFF_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_handoff.log
 HANDOFF_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_handoff.log
 HANDOFF_TRACE_ROCQ_EXPECTED=../../../rocq/scheduling_theory/theories/Operational/Awkernel/GeneratedHandoffTraceArtifact.v
+HANDOFF_ACCEPT_RUNHASKELL=/home/ytakano/.ghcup/bin/runhaskell
+HANDOFF_ACCEPT_RUNNER=scripts/haskell/HandoffAcceptanceMain.hs
+HANDOFF_ACCEPT_CHECKER_DIR=../../../rocq/scheduling_theory/extracted/haskell
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000
@@ -285,6 +289,10 @@ check-handoff-trace-qemu-2cpu:
 		--backend qemu-handoff \
 		--expected ${HANDOFF_TRACE_ROCQ_EXPECTED} \
 		--log ${HANDOFF_TRACE_QEMU_LOG}
+	python3 scripts/check_trace_rows_artifact.py \
+		--backend qemu-handoff \
+		--expected ${HANDOFF_TRACE_ROWS_EXPECTED} \
+		--log ${HANDOFF_TRACE_QEMU_LOG}
 
 check-handoff-trace-kvm-2cpu:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_kvm.fd
@@ -304,8 +312,30 @@ check-handoff-trace-kvm-2cpu:
 		--backend kvm-handoff \
 		--expected ${HANDOFF_TRACE_ROCQ_EXPECTED} \
 		--log ${HANDOFF_TRACE_KVM_LOG}
+	python3 scripts/check_trace_rows_artifact.py \
+		--backend kvm-handoff \
+		--expected ${HANDOFF_TRACE_ROWS_EXPECTED} \
+		--log ${HANDOFF_TRACE_KVM_LOG}
 
 check-handoff-trace-2cpu: check-handoff-trace-qemu-2cpu check-handoff-trace-kvm-2cpu
+
+check-handoff-accept-qemu-2cpu: check-handoff-trace-qemu-2cpu
+	python3 scripts/check_handoff_acceptance.py \
+		--backend qemu-handoff \
+		--log ${HANDOFF_TRACE_QEMU_LOG} \
+		--runhaskell ${HANDOFF_ACCEPT_RUNHASKELL} \
+		--runner ${HANDOFF_ACCEPT_RUNNER} \
+		--checker-dir ${HANDOFF_ACCEPT_CHECKER_DIR}
+
+check-handoff-accept-kvm-2cpu: check-handoff-trace-kvm-2cpu
+	python3 scripts/check_handoff_acceptance.py \
+		--backend kvm-handoff \
+		--log ${HANDOFF_TRACE_KVM_LOG} \
+		--runhaskell ${HANDOFF_ACCEPT_RUNHASKELL} \
+		--runner ${HANDOFF_ACCEPT_RUNNER} \
+		--checker-dir ${HANDOFF_ACCEPT_CHECKER_DIR}
+
+check-handoff-accept-2cpu: check-handoff-accept-qemu-2cpu check-handoff-accept-kvm-2cpu
 
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd

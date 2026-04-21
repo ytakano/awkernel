@@ -1,0 +1,6 @@
+0	Wakeup	1	-	-	1	false	-
+1	RequestResched	1	-	-	1	true	-
+1	HandleResched	1	-	-	1	true	-
+1	Choose	1	1	-	1	true	1
+1	Dispatch	1	1	1		false	-
+1	Complete	1	-	-		true	-
