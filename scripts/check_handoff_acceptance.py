@@ -14,8 +14,15 @@ BEGIN_MARKER = "BEGIN_TRACE_ROWS"
 END_MARKER = "END_TRACE_ROWS"
 
 
+class AcceptanceError(RuntimeError):
+    pass
+
+
 def load_lines(path: pathlib.Path) -> list[str]:
-    return path.read_text(encoding="utf-8").splitlines()
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise AcceptanceError(f"failed to read serial log {path}: {exc}") from exc
 
 
 def extract_trace_rows_block(lines: list[str]) -> list[str]:
@@ -23,18 +30,18 @@ def extract_trace_rows_block(lines: list[str]) -> list[str]:
     end_indices = [i for i, line in enumerate(lines) if line.strip() == END_MARKER]
 
     if len(begin_indices) != 1:
-        raise SystemExit(f"expected exactly one {BEGIN_MARKER} marker, found {len(begin_indices)}")
+        raise AcceptanceError(f"expected exactly one {BEGIN_MARKER} marker, found {len(begin_indices)}")
     if len(end_indices) != 1:
-        raise SystemExit(f"expected exactly one {END_MARKER} marker, found {len(end_indices)}")
+        raise AcceptanceError(f"expected exactly one {END_MARKER} marker, found {len(end_indices)}")
 
     begin = begin_indices[0]
     end = end_indices[0]
     if not begin < end:
-        raise SystemExit("trace rows markers are out of order")
+        raise AcceptanceError("trace rows markers are out of order")
 
     rows = [line.rstrip() for line in lines[begin + 1 : end]]
     if not rows:
-        raise SystemExit("trace rows block is empty")
+        raise AcceptanceError("trace rows block is empty")
     return rows
 
 
@@ -42,12 +49,12 @@ def resolve_runhaskell(command: str) -> str:
     if "/" in command:
         path = pathlib.Path(command)
         if not path.is_file():
-            raise SystemExit(f"runhaskell not found: {path}")
+            raise AcceptanceError(f"runhaskell not found: {path}")
         return str(path)
 
     resolved = shutil.which(command)
     if resolved is None:
-        raise SystemExit(f"runhaskell not found in PATH: {command}")
+        raise AcceptanceError(f"runhaskell not found in PATH: {command}")
     return resolved
 
 
@@ -89,7 +96,7 @@ def resolve_checker_dir(explicit: pathlib.Path | None) -> pathlib.Path:
             return candidate
 
     searched = "\n".join(str(c) for c in candidate_checker_dirs())
-    raise SystemExit(
+    raise AcceptanceError(
         "extracted Haskell checker module not found. "
         "Pass --checker-dir or set HANDOFF_ACCEPT_CHECKER_DIR.\n"
         f"Searched:\n{searched}"
@@ -120,12 +127,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    runhaskell = resolve_runhaskell(args.runhaskell)
-    if not args.runner.is_file():
-        raise SystemExit(f"Haskell runner not found: {args.runner}")
-    checker_dir = resolve_checker_dir(args.checker_dir)
+    try:
+        runhaskell = resolve_runhaskell(args.runhaskell)
+        if not args.runner.is_file():
+            raise AcceptanceError(f"Haskell runner not found: {args.runner}")
+        checker_dir = resolve_checker_dir(args.checker_dir)
+        rows = extract_trace_rows_block(load_lines(args.log))
+    except AcceptanceError as exc:
+        raise SystemExit(f"{args.backend}: {exc}") from exc
 
-    rows = extract_trace_rows_block(load_lines(args.log))
     payload = "\n".join(rows) + "\n"
     cmd = [
         runhaskell,
@@ -133,7 +143,18 @@ def main() -> int:
         str(args.runner),
         args.backend,
     ]
-    result = subprocess.run(cmd, input=payload, text=True)
+    result = subprocess.run(cmd, input=payload, text=True, capture_output=True)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    if result.returncode != 0:
+        stderr = result.stderr
+        if "failed to parse trace rows" in stderr:
+            raise SystemExit(f"{args.backend}: failed to parse extracted trace rows")
+        if "acceptance checker rejected trace rows" in stderr:
+            raise SystemExit(f"{args.backend}: acceptance checker rejected trace rows")
+        raise SystemExit(f"{args.backend}: acceptance checker exited with status {result.returncode}")
     return result.returncode
 
 

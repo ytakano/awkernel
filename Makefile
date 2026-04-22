@@ -152,6 +152,9 @@ x86_64_boot.img: kernel-x86_64.elf
 x86_64_uefi.img: kernel-x86_64.elf
 	RUSTFLAGS="$(RUSTC_MISC_ARGS)" cargo +$(RUSTV) run --release --package x86bootdisk --no-default-features --features uefi -- --kernel $< --output $@ --pxe x86_64_uefi_pxe_boot --boot-type uefi
 
+build-handoff-trace-x86_64: FORCE
+	$(MAKE) x86_64 RELEASE=1 OPT='--release --features handoff_trace_vm'
+
 $(X86ASM): FORCE
 	$(MAKE) -C $@
 
@@ -228,7 +231,7 @@ qemu-x86_64-baseline-trace-2cpu:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 $(QEMU_X86_2CPU_ARGS) -nographic
 
-qemu-x86_64-handoff-trace-2cpu:
+qemu-x86_64-handoff-trace-2cpu: build-handoff-trace-x86_64
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 $(QEMU_X86_2CPU_ARGS) -nographic
 
@@ -236,7 +239,7 @@ qemu-kvm-x86_64-baseline-trace-2cpu:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 -enable-kvm -cpu host $(QEMU_X86_2CPU_ARGS) -nographic
 
-qemu-kvm-x86_64-handoff-trace-2cpu:
+qemu-kvm-x86_64-handoff-trace-2cpu: build-handoff-trace-x86_64
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 -enable-kvm -cpu host $(QEMU_X86_2CPU_ARGS) -nographic
 
@@ -271,7 +274,8 @@ check-baseline-trace-kvm-2cpu:
 
 check-baseline-trace-2cpu: check-baseline-trace-qemu-2cpu check-baseline-trace-kvm-2cpu
 
-check-handoff-trace-qemu-2cpu:
+# Rebuild the image with handoff_trace_vm before each handoff capture run.
+capture-handoff-log-qemu-2cpu: build-handoff-trace-x86_64
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	timeout 40s qemu-system-x86_64 \
 		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
@@ -280,6 +284,21 @@ check-handoff-trace-qemu-2cpu:
 		-machine q35 \
 		-serial stdio -monitor none \
 		-m 2G -smp 2 -nographic | tee ${HANDOFF_TRACE_QEMU_LOG}
+
+capture-handoff-log-kvm-2cpu: build-handoff-trace-x86_64
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_kvm.fd
+	timeout 40s qemu-system-x86_64 \
+		-enable-kvm -cpu host \
+		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
+		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_kvm.fd \
+		-drive format=raw,file=x86_64_uefi.img \
+		-machine q35 \
+		-serial stdio -monitor none \
+		-m 2G -smp 2 -nographic | tee ${HANDOFF_TRACE_KVM_LOG}
+
+capture-handoff-log-2cpu: capture-handoff-log-qemu-2cpu capture-handoff-log-kvm-2cpu
+
+check-handoff-trace-qemu-2cpu: capture-handoff-log-qemu-2cpu
 	python3 scripts/check_baseline_trace.py \
 		--backend qemu-handoff \
 		--expected ${HANDOFF_TRACE_EXPECTED} \
@@ -293,16 +312,7 @@ check-handoff-trace-qemu-2cpu:
 		--expected ${HANDOFF_TRACE_ROWS_EXPECTED} \
 		--log ${HANDOFF_TRACE_QEMU_LOG}
 
-check-handoff-trace-kvm-2cpu:
-	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_kvm.fd
-	timeout 40s qemu-system-x86_64 \
-		-enable-kvm -cpu host \
-		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
-		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_kvm.fd \
-		-drive format=raw,file=x86_64_uefi.img \
-		-machine q35 \
-		-serial stdio -monitor none \
-		-m 2G -smp 2 -nographic | tee ${HANDOFF_TRACE_KVM_LOG}
+check-handoff-trace-kvm-2cpu: capture-handoff-log-kvm-2cpu
 	python3 scripts/check_baseline_trace.py \
 		--backend kvm-handoff \
 		--expected ${HANDOFF_TRACE_EXPECTED} \
@@ -318,14 +328,14 @@ check-handoff-trace-kvm-2cpu:
 
 check-handoff-trace-2cpu: check-handoff-trace-qemu-2cpu check-handoff-trace-kvm-2cpu
 
-check-handoff-accept-qemu-2cpu: check-handoff-trace-qemu-2cpu
+check-handoff-accept-qemu-2cpu: capture-handoff-log-qemu-2cpu
 	python3 scripts/check_handoff_acceptance.py \
 		--backend qemu-handoff \
 		--log ${HANDOFF_TRACE_QEMU_LOG} \
 		--runhaskell ${HANDOFF_ACCEPT_RUNHASKELL} \
 		--runner ${HANDOFF_ACCEPT_RUNNER}
 
-check-handoff-accept-kvm-2cpu: check-handoff-trace-kvm-2cpu
+check-handoff-accept-kvm-2cpu: capture-handoff-log-kvm-2cpu
 	python3 scripts/check_handoff_acceptance.py \
 		--backend kvm-handoff \
 		--log ${HANDOFF_TRACE_KVM_LOG} \
