@@ -298,6 +298,8 @@ capture-handoff-log-kvm-2cpu: build-handoff-trace-x86_64
 
 capture-handoff-log-2cpu: capture-handoff-log-qemu-2cpu capture-handoff-log-kvm-2cpu
 
+# Phase-2 completion requires both backends to pass the rows-only acceptance
+# gate and the artifact/regression gate over the same captured handoff log.
 check-handoff-trace-qemu-2cpu: capture-handoff-log-qemu-2cpu
 	python3 scripts/check_baseline_trace.py \
 		--backend qemu-handoff \

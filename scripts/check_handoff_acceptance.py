@@ -105,7 +105,7 @@ def resolve_checker_dir(explicit: pathlib.Path | None) -> pathlib.Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the extracted Haskell handoff acceptance checker on a captured neutral trace-rows block."
+        description="Run the phase-2 neutral-rows acceptance gate on a captured neutral trace-rows block."
     )
     parser.add_argument("--log", type=pathlib.Path, required=True, help="Path to the captured serial log.")
     parser.add_argument("--backend", default="backend", help="Backend label for diagnostics.")
@@ -118,12 +118,12 @@ def main() -> int:
         "--runner",
         type=pathlib.Path,
         required=True,
-        help="Path to the Haskell acceptance runner.",
+        help="Path to the Haskell phase-2 acceptance runner.",
     )
     parser.add_argument(
         "--checker-dir",
         type=pathlib.Path,
-        help="Directory containing the extracted AwkernelHandoffAcceptance module.",
+        help="Directory containing the extracted AwkernelHandoffAcceptance module for the phase-2 gate.",
     )
     args = parser.parse_args()
 
@@ -153,8 +153,8 @@ def main() -> int:
         if "failed to parse trace rows" in stderr:
             raise SystemExit(f"{args.backend}: failed to parse extracted trace rows")
         if "acceptance checker rejected trace rows" in stderr:
-            raise SystemExit(f"{args.backend}: acceptance checker rejected trace rows")
-        raise SystemExit(f"{args.backend}: acceptance checker exited with status {result.returncode}")
+            raise SystemExit(f"{args.backend}: phase-2 acceptance rejected trace rows")
+        raise SystemExit(f"{args.backend}: phase-2 acceptance checker exited with status {result.returncode}")
     return result.returncode
 
 
