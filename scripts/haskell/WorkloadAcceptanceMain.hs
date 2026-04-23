@@ -109,6 +109,8 @@ data Diagnostic = Diagnostic
   , message :: String
   , rowIndex :: Maybe Int
   , lifecycleIndex :: Maybe Int
+  , logLineBegin :: Maybe Int
+  , logLineEnd :: Maybe Int
   , backendLabel :: String
   , scenarioLabel :: Maybe String
   }
@@ -149,6 +151,8 @@ renderDiagnostic diag =
       , jsonField "message" (jsonString (message diag))
       , jsonField "row_index" (jsonMaybeInt (rowIndex diag))
       , jsonField "lifecycle_index" (jsonMaybeInt (lifecycleIndex diag))
+      , jsonField "log_line_begin" (jsonMaybeInt (logLineBegin diag))
+      , jsonField "log_line_end" (jsonMaybeInt (logLineEnd diag))
       ]
 
 emitDiagnostic :: Diagnostic -> IO ()
@@ -168,6 +172,8 @@ mkSuccess backend scenario =
     , message = "workload acceptance accepted the emitted lifecycle/rows trace"
     , rowIndex = Nothing
     , lifecycleIndex = Nothing
+    , logLineBegin = Nothing
+    , logLineEnd = Nothing
     , backendLabel = backend
     , scenarioLabel = scenario
     }
@@ -180,6 +186,8 @@ mkFailure backend scenario diagKind diagMessage rowIx lifecycleIx =
     , message = diagMessage
     , rowIndex = rowIx
     , lifecycleIndex = lifecycleIx
+    , logLineBegin = Nothing
+    , logLineEnd = Nothing
     , backendLabel = backend
     , scenarioLabel = scenario
     }

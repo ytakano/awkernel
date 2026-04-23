@@ -442,6 +442,9 @@ check-workload-accept-2cpu-all:
 		$(MAKE) check-workload-accept-kvm-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
 	done
 
+check-workload-accept-contract:
+	python3 -m unittest discover -s tests -p 'test_workload_acceptance_contract.py' -v
+
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	gdb-multiarch -x scripts/x86-debug.gdb
