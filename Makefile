@@ -211,17 +211,11 @@ WORKLOAD_TRACE_FEATURE_nested_spawn=nested_spawn_trace_vm
 WORKLOAD_TRACE_FEATURE_multi_async=multi_async_trace_vm
 WORKLOAD_TRACE_FEATURE_sleep_wakeup=sleep_wakeup_trace_vm
 WORKLOAD_TRACE_FEATURE=$(WORKLOAD_TRACE_FEATURE_$(WORKLOAD_SCENARIO))
-WORKLOAD_TRACE_FIXTURE_DIR=fixtures/workload_trace/$(WORKLOAD_SCENARIO)
-WORKLOAD_TRACE_BASELINE_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/baseline.txt
-WORKLOAD_TRACE_ROWS_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/rows.tsv
-WORKLOAD_TRACE_LIFECYCLE_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/lifecycle.tsv
-WORKLOAD_TRACE_ROCQ_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/rocq.v
 WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
 WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
 WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup
-WORKLOAD_STRICT_BASELINE_SCENARIOS=single_async nested_spawn
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000
@@ -425,66 +419,6 @@ capture-workload-log-kvm-2cpu: build-workload-trace-x86_64
 		-machine q35 \
 		-serial stdio -monitor none \
 		-m 2G -smp 2 -nographic | tee ${WORKLOAD_TRACE_KVM_LOG}
-
-refresh-workload-trace-fixtures-qemu-2cpu: capture-workload-log-qemu-2cpu
-	mkdir -p ${WORKLOAD_TRACE_FIXTURE_DIR}
-	python3 scripts/extract_trace_artifact.py \
-		--mode baseline \
-		--log ${WORKLOAD_TRACE_QEMU_LOG} \
-		--output ${WORKLOAD_TRACE_BASELINE_EXPECTED}
-	python3 scripts/extract_trace_artifact.py \
-		--mode block \
-		--begin BEGIN_TRACE_ROWS \
-		--end END_TRACE_ROWS \
-		--log ${WORKLOAD_TRACE_QEMU_LOG} \
-		--output ${WORKLOAD_TRACE_ROWS_EXPECTED}
-	python3 scripts/extract_trace_artifact.py \
-		--mode block \
-		--begin BEGIN_TASK_LIFECYCLE \
-		--end END_TASK_LIFECYCLE \
-		--log ${WORKLOAD_TRACE_QEMU_LOG} \
-		--output ${WORKLOAD_TRACE_LIFECYCLE_EXPECTED}
-	python3 scripts/extract_trace_artifact.py \
-		--mode block \
-		--begin BEGIN_ROCQ_TRACE \
-		--end END_ROCQ_TRACE \
-		--log ${WORKLOAD_TRACE_QEMU_LOG} \
-		--output ${WORKLOAD_TRACE_ROCQ_EXPECTED}
-
-refresh-workload-trace-fixtures-qemu-2cpu-all:
-	@for scenario in $(WORKLOAD_SCENARIOS); do \
-		$(MAKE) refresh-workload-trace-fixtures-qemu-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
-	done
-
-check-workload-trace-qemu-2cpu: capture-workload-log-qemu-2cpu
-	@if echo " $(WORKLOAD_STRICT_BASELINE_SCENARIOS) " | grep -q " $(WORKLOAD_SCENARIO) "; then \
-	python3 scripts/check_baseline_trace.py \
-		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
-		--expected ${WORKLOAD_TRACE_BASELINE_EXPECTED} \
-		--log ${WORKLOAD_TRACE_QEMU_LOG}; \
-	else \
-		echo "qemu-workload-$(WORKLOAD_SCENARIO): baseline fixture is representative only; skipping exact baseline comparison"; \
-	fi
-	python3 scripts/check_rocq_trace_artifact.py \
-		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
-		--expected ${WORKLOAD_TRACE_ROCQ_EXPECTED} \
-		--log ${WORKLOAD_TRACE_QEMU_LOG}
-	python3 scripts/check_trace_rows_artifact.py \
-		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
-		--expected ${WORKLOAD_TRACE_ROWS_EXPECTED} \
-		--log ${WORKLOAD_TRACE_QEMU_LOG}
-	python3 scripts/check_trace_block_artifact.py \
-		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
-		--expected ${WORKLOAD_TRACE_LIFECYCLE_EXPECTED} \
-		--log ${WORKLOAD_TRACE_QEMU_LOG} \
-		--begin BEGIN_TASK_LIFECYCLE \
-		--end END_TASK_LIFECYCLE \
-		--label task-lifecycle
-
-check-workload-trace-qemu-2cpu-all:
-	@for scenario in $(WORKLOAD_SCENARIOS); do \
-		$(MAKE) check-workload-trace-qemu-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
-	done
 
 check-workload-accept-qemu-2cpu: capture-workload-log-qemu-2cpu
 	python3 scripts/check_workload_acceptance.py \
