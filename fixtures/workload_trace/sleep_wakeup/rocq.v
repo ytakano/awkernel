@@ -1,6 +1,6 @@
 From Stdlib Require Import List.
 From RocqSched Require Import Operational.Common.Step.
-From RocqSched Require Import Operational.Awkernel.CapturedTraceSyntax.
+From RocqSched Require Import Operational.Awkernel.Minimal.CapturedTraceSyntax.
 Import ListNotations.
 
 Definition awk_generated_handoff_rows : list AwkernelCapturedRow :=

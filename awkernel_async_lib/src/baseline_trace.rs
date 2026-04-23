@@ -425,7 +425,7 @@ pub fn render_rocq_handoff_artifact_lines() -> Vec<String> {
     let mut lines = vec![
         "From Stdlib Require Import List.".to_string(),
         "From RocqSched Require Import Operational.Common.Step.".to_string(),
-        "From RocqSched Require Import Operational.Awkernel.CapturedTraceSyntax.".to_string(),
+        "From RocqSched Require Import Operational.Awkernel.Minimal.CapturedTraceSyntax.".to_string(),
         "Import ListNotations.".to_string(),
         "".to_string(),
         "Definition awk_generated_handoff_rows : list AwkernelCapturedRow :=".to_string(),
