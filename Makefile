@@ -216,10 +216,17 @@ WORKLOAD_TRACE_BASELINE_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/baseline.txt
 WORKLOAD_TRACE_ROWS_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/rows.tsv
 WORKLOAD_TRACE_LIFECYCLE_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/lifecycle.tsv
 WORKLOAD_TRACE_ROCQ_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/rocq.v
+WORKLOAD_TRACE_CANDIDATE_TABLE_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/candidate_table.v
 WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
 WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
+WORKLOAD_CANDIDATE_RUNNER ?= scripts/haskell/WorkloadCandidateTableMain.hs
+WORKLOAD_SCHED_THEORY_DIR ?= ../../../rocq/scheduling_theory
+WORKLOAD_GENERATED_DIR ?= $(WORKLOAD_SCHED_THEORY_DIR)/theories/Operational/Awkernel/Minimal/Generated
+WORKLOAD_SCHED_THEORY_CONTAINER ?= docker-scheduling_theory-1
+WORKLOAD_SCHED_THEORY_CONTAINER_DIR ?= /scheduling_theory
+WORKLOAD_CANDIDATE_PROOF_TARGET ?= theories/Operational/Awkernel/Minimal/WorkloadCandidateTableGeneratedProof.vo
 WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup
 WORKLOAD_STRICT_BASELINE_SCENARIOS=single_async nested_spawn
 
@@ -450,6 +457,17 @@ refresh-workload-trace-fixtures-qemu-2cpu: capture-workload-log-qemu-2cpu
 		--end END_ROCQ_TRACE \
 		--log ${WORKLOAD_TRACE_QEMU_LOG} \
 		--output ${WORKLOAD_TRACE_ROCQ_EXPECTED}
+	python3 scripts/generate_workload_candidate_table.py \
+		--backend qemu-workload \
+		--scenario ${WORKLOAD_SCENARIO} \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--runhaskell ${WORKLOAD_ACCEPT_RUNHASKELL} \
+		--runner ${WORKLOAD_CANDIDATE_RUNNER} \
+		--output ${WORKLOAD_TRACE_CANDIDATE_TABLE_EXPECTED}
+	python3 scripts/stage_workload_generated_modules.py \
+		--rows-rocq ${WORKLOAD_TRACE_ROCQ_EXPECTED} \
+		--candidate-table ${WORKLOAD_TRACE_CANDIDATE_TABLE_EXPECTED} \
+		--output-dir ${WORKLOAD_GENERATED_DIR}
 
 refresh-workload-trace-fixtures-qemu-2cpu-all:
 	@for scenario in $(WORKLOAD_SCENARIOS); do \
@@ -480,6 +498,29 @@ check-workload-trace-qemu-2cpu: capture-workload-log-qemu-2cpu
 		--begin BEGIN_TASK_LIFECYCLE \
 		--end END_TASK_LIFECYCLE \
 		--label task-lifecycle
+	@tmp_candidate_table=$$(mktemp /tmp/awkernel_workload_candidate_table.XXXXXX.v); \
+	python3 scripts/generate_workload_candidate_table.py \
+		--backend qemu-workload \
+		--scenario ${WORKLOAD_SCENARIO} \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--runhaskell ${WORKLOAD_ACCEPT_RUNHASKELL} \
+		--runner ${WORKLOAD_CANDIDATE_RUNNER} \
+		--output $$tmp_candidate_table; \
+	diff -u ${WORKLOAD_TRACE_CANDIDATE_TABLE_EXPECTED} $$tmp_candidate_table; \
+	rm -f $$tmp_candidate_table
+
+prove-workload-candidate-table-qemu-2cpu:
+	python3 scripts/stage_workload_generated_modules.py \
+		--rows-rocq ${WORKLOAD_TRACE_ROCQ_EXPECTED} \
+		--candidate-table ${WORKLOAD_TRACE_CANDIDATE_TABLE_EXPECTED} \
+		--output-dir ${WORKLOAD_GENERATED_DIR}
+	docker exec ${WORKLOAD_SCHED_THEORY_CONTAINER} \
+		zsh -lc "cd ${WORKLOAD_SCHED_THEORY_CONTAINER_DIR} && make ${WORKLOAD_CANDIDATE_PROOF_TARGET}"
+
+prove-workload-candidate-table-qemu-2cpu-all:
+	@for scenario in $(WORKLOAD_SCENARIOS); do \
+		$(MAKE) prove-workload-candidate-table-qemu-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
+	done
 
 check-workload-trace-qemu-2cpu-all:
 	@for scenario in $(WORKLOAD_SCENARIOS); do \
