@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import shutil
@@ -18,46 +19,89 @@ TASK_LIFECYCLE_END = "END_TASK_LIFECYCLE"
 
 
 class AcceptanceError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        kind: str,
+        message: str,
+        *,
+        log_line_begin: int | None = None,
+        log_line_end: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.log_line_begin = log_line_begin
+        self.log_line_end = log_line_end
 
 
 def load_lines(path: pathlib.Path) -> list[str]:
     try:
         return path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise AcceptanceError(f"failed to read serial log {path}: {exc}") from exc
+        raise AcceptanceError(
+            "log-read-failure",
+            f"failed to read serial log {path}: {exc}",
+        ) from exc
 
 
-def extract_block(lines: list[str], begin: str, end: str, empty_message: str) -> list[str]:
+def extract_block(
+    lines: list[str],
+    begin: str,
+    end: str,
+    *,
+    missing_kind: str,
+    empty_kind: str,
+    empty_message: str,
+) -> tuple[list[str], int, int]:
     begin_indices = [i for i, line in enumerate(lines) if line.strip() == begin]
     end_indices = [i for i, line in enumerate(lines) if line.strip() == end]
 
     if len(begin_indices) != 1:
-        raise AcceptanceError(f"expected exactly one {begin} marker, found {len(begin_indices)}")
+        raise AcceptanceError(
+            missing_kind,
+            f"expected exactly one {begin} marker, found {len(begin_indices)}",
+            log_line_begin=(begin_indices[0] + 1) if begin_indices else None,
+            log_line_end=(begin_indices[-1] + 1) if begin_indices else None,
+        )
     if len(end_indices) != 1:
-        raise AcceptanceError(f"expected exactly one {end} marker, found {len(end_indices)}")
+        raise AcceptanceError(
+            missing_kind,
+            f"expected exactly one {end} marker, found {len(end_indices)}",
+            log_line_begin=(end_indices[0] + 1) if end_indices else None,
+            log_line_end=(end_indices[-1] + 1) if end_indices else None,
+        )
 
     begin_idx = begin_indices[0]
     end_idx = end_indices[0]
     if not begin_idx < end_idx:
-        raise AcceptanceError(f"{begin} and {end} markers are out of order")
+        raise AcceptanceError(
+            missing_kind,
+            f"{begin} and {end} markers are out of order",
+            log_line_begin=begin_idx + 1,
+            log_line_end=end_idx + 1,
+        )
 
     block = [line.rstrip() for line in lines[begin_idx + 1 : end_idx]]
     if not block:
-        raise AcceptanceError(empty_message)
-    return block
+        raise AcceptanceError(
+            empty_kind,
+            empty_message,
+            log_line_begin=begin_idx + 1,
+            log_line_end=end_idx + 1,
+        )
+    return block, begin_idx + 2, end_idx
 
 
 def resolve_runhaskell(command: str) -> str:
     if "/" in command:
         path = pathlib.Path(command)
         if not path.is_file():
-            raise AcceptanceError(f"runhaskell not found: {path}")
+            raise AcceptanceError("runhaskell-not-found", f"runhaskell not found: {path}")
         return str(path)
 
     resolved = shutil.which(command)
     if resolved is None:
-        raise AcceptanceError(f"runhaskell not found in PATH: {command}")
+        raise AcceptanceError("runhaskell-not-found", f"runhaskell not found in PATH: {command}")
     return resolved
 
 
@@ -100,10 +144,40 @@ def resolve_checker_dir(explicit: pathlib.Path | None) -> pathlib.Path:
 
     searched = "\n".join(str(c) for c in candidate_checker_dirs())
     raise AcceptanceError(
+        "checker-module-not-found",
         "extracted Haskell workload checker module not found. "
         "Pass --checker-dir or set WORKLOAD_ACCEPT_CHECKER_DIR.\n"
-        f"Searched:\n{searched}"
+        f"Searched:\n{searched}",
     )
+
+
+def emit_diagnostic(
+    *,
+    accepted: bool,
+    backend: str,
+    scenario: str | None,
+    kind: str,
+    message: str,
+    row_index: int | None = None,
+    lifecycle_index: int | None = None,
+    log_line_begin: int | None = None,
+    log_line_end: int | None = None,
+) -> None:
+    payload = {
+        "accepted": accepted,
+        "backend": backend,
+        "scenario": scenario,
+        "kind": kind,
+        "message": message,
+        "row_index": row_index,
+        "lifecycle_index": lifecycle_index,
+        "log_line_begin": log_line_begin,
+        "log_line_end": log_line_end,
+    }
+    print(json.dumps(payload, ensure_ascii=True))
+    stream = sys.stderr
+    status = "accepted" if accepted else "rejected"
+    print(f"{backend}{'' if scenario is None else f'-{scenario}'}: {status}: {message}", file=stream)
 
 
 def main() -> int:
@@ -116,27 +190,41 @@ def main() -> int:
     parser.add_argument("--runhaskell", default="runhaskell", help="Path or command name for runhaskell.")
     parser.add_argument("--runner", type=pathlib.Path, required=True, help="Path to the Haskell workload acceptance runner.")
     parser.add_argument("--checker-dir", type=pathlib.Path, help="Directory containing the extracted AwkernelWorkloadAcceptance module.")
-    parser.add_argument("--candidate-runner", type=pathlib.Path, help="Optional Haskell runner that generates and validates candidate tables from accepted rows.")
-    parser.add_argument("--candidate-output", type=pathlib.Path, help="Optional output path for the generated candidate_table.v. If omitted, a temporary file is used.")
     args = parser.parse_args()
-
-    label = args.backend if not args.scenario else f"{args.backend}-{args.scenario}"
 
     try:
         runhaskell = resolve_runhaskell(args.runhaskell)
         if not args.runner.is_file():
-            raise AcceptanceError(f"Haskell runner not found: {args.runner}")
+            raise AcceptanceError("runner-not-found", f"Haskell runner not found: {args.runner}")
         checker_dir = resolve_checker_dir(args.checker_dir)
         lines = load_lines(args.log)
-        rows = extract_block(lines, TRACE_ROWS_BEGIN, TRACE_ROWS_END, "trace rows block is empty")
-        lifecycle = extract_block(
+        rows, _, _ = extract_block(
+            lines,
+            TRACE_ROWS_BEGIN,
+            TRACE_ROWS_END,
+            missing_kind="missing-rows-block",
+            empty_kind="empty-rows-block",
+            empty_message="trace rows block is empty",
+        )
+        lifecycle, _, _ = extract_block(
             lines,
             TASK_LIFECYCLE_BEGIN,
             TASK_LIFECYCLE_END,
-            "task lifecycle block is empty",
+            missing_kind="missing-lifecycle-block",
+            empty_kind="empty-lifecycle-block",
+            empty_message="task lifecycle block is empty",
         )
     except AcceptanceError as exc:
-        raise SystemExit(f"{label}: {exc}") from exc
+        emit_diagnostic(
+            accepted=False,
+            backend=args.backend,
+            scenario=args.scenario,
+            kind=exc.kind,
+            message=exc.message,
+            log_line_begin=exc.log_line_begin,
+            log_line_end=exc.log_line_end,
+        )
+        return 2
 
     with tempfile.TemporaryDirectory(prefix="awkernel-workload-accept-") as tmpdir:
         tmpdir_path = pathlib.Path(tmpdir)
@@ -149,7 +237,8 @@ def main() -> int:
             runhaskell,
             f"-i{checker_dir}",
             str(args.runner),
-            label,
+            args.backend,
+            args.scenario or "-",
             str(rows_path),
             str(lifecycle_path),
         ]
@@ -160,42 +249,6 @@ def main() -> int:
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr)
 
-        if result.returncode != 0:
-            stderr = result.stderr
-            if "failed to parse trace rows" in stderr:
-                raise SystemExit(f"{label}: failed to parse extracted trace rows")
-            if "failed to parse task lifecycle" in stderr:
-                raise SystemExit(f"{label}: failed to parse extracted task lifecycle")
-            if "acceptance checker rejected workload trace" in stderr:
-                raise SystemExit(f"{label}: workload acceptance rejected emitted lifecycle/rows trace")
-            raise SystemExit(f"{label}: workload acceptance checker exited with status {result.returncode}")
-
-        if args.candidate_runner is not None:
-            candidate_output = args.candidate_output or (tmpdir_path / "candidate_table.v")
-            candidate_cmd = [
-                runhaskell,
-                f"-i{checker_dir}",
-                str(args.candidate_runner),
-                label,
-                str(rows_path),
-                str(candidate_output),
-            ]
-            candidate_result = subprocess.run(candidate_cmd, text=True, capture_output=True)
-
-            if candidate_result.stdout:
-                print(candidate_result.stdout, end="")
-            if candidate_result.stderr:
-                print(candidate_result.stderr, end="", file=sys.stderr)
-
-            if candidate_result.returncode != 0:
-                stderr = candidate_result.stderr
-                if "failed to parse trace rows" in stderr:
-                    raise SystemExit(f"{label}: failed to parse extracted trace rows for candidate-table generation")
-                if "candidate-table sanity check failed" in stderr:
-                    raise SystemExit(f"{label}: candidate-table check rejected the accepted trace rows")
-                raise SystemExit(f"{label}: candidate-table generator exited with status {candidate_result.returncode}")
-            if not candidate_output.is_file():
-                raise SystemExit(f"{label}: candidate-table generator did not create {candidate_output}")
     return result.returncode
 
 

@@ -2,6 +2,7 @@ module Main where
 
 import qualified AwkernelWorkloadAcceptance as A
 import Data.Char (isDigit)
+import Data.List (intercalate)
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
@@ -65,13 +66,13 @@ rowFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, ne
 rowFromFields fields =
   Left ("expected 8 TSV columns, got " ++ show (length fields) ++ " from " ++ show fields)
 
-rowsFromLines :: [String] -> Either String (A.List A.AwkernelCapturedRow)
-rowsFromLines [] = Right A.Nil
-rowsFromLines (line:rest)
-  | null line = rowsFromLines rest
+rowsFromLines :: Int -> [String] -> Either (Int, String) (A.List A.AwkernelCapturedRow)
+rowsFromLines _ [] = Right A.Nil
+rowsFromLines index (line:rest)
+  | null line = rowsFromLines (index + 1) rest
   | otherwise = do
-      row <- rowFromFields (splitOn '\t' line)
-      rows <- rowsFromLines rest
+      row <- either (Left . (,) index) Right (rowFromFields (splitOn '\t' line))
+      rows <- rowsFromLines (index + 1) rest
       pure (A.Cons row rows)
 
 lifecycleKindFromField :: String -> Either String A.TaskLifecycleKind
@@ -93,42 +94,136 @@ lifecycleRecordFromFields [kindField, subjectField, relatedField] = do
 lifecycleRecordFromFields fields =
   Left ("expected 3 TSV lifecycle columns, got " ++ show (length fields) ++ " from " ++ show fields)
 
-lifecycleFromLines :: [String] -> Either String (A.List A.TaskLifecycleRecord)
-lifecycleFromLines [] = Right A.Nil
-lifecycleFromLines (line:rest)
-  | null line = lifecycleFromLines rest
+lifecycleFromLines :: Int -> [String] -> Either (Int, String) (A.List A.TaskLifecycleRecord)
+lifecycleFromLines _ [] = Right A.Nil
+lifecycleFromLines index (line:rest)
+  | null line = lifecycleFromLines (index + 1) rest
   | otherwise = do
-      record <- lifecycleRecordFromFields (splitOn '\t' line)
-      records <- lifecycleFromLines rest
+      record <- either (Left . (,) index) Right (lifecycleRecordFromFields (splitOn '\t' line))
+      records <- lifecycleFromLines (index + 1) rest
       pure (A.Cons record records)
+
+data Diagnostic = Diagnostic
+  { accepted :: Bool
+  , kind :: String
+  , message :: String
+  , rowIndex :: Maybe Int
+  , lifecycleIndex :: Maybe Int
+  , backendLabel :: String
+  , scenarioLabel :: Maybe String
+  }
+
+jsonEscape :: String -> String
+jsonEscape = concatMap escapeChar
+  where
+    escapeChar '"' = "\\\""
+    escapeChar '\\' = "\\\\"
+    escapeChar '\n' = "\\n"
+    escapeChar '\r' = "\\r"
+    escapeChar '\t' = "\\t"
+    escapeChar c = [c]
+
+jsonField :: String -> String -> String
+jsonField key value = "\"" ++ key ++ "\":" ++ value
+
+jsonString :: String -> String
+jsonString s = "\"" ++ jsonEscape s ++ "\""
+
+jsonMaybeInt :: Maybe Int -> String
+jsonMaybeInt Nothing = "null"
+jsonMaybeInt (Just n) = show n
+
+jsonMaybeString :: Maybe String -> String
+jsonMaybeString Nothing = "null"
+jsonMaybeString (Just s) = jsonString s
+
+renderDiagnostic :: Diagnostic -> String
+renderDiagnostic diag =
+  "{" ++ intercalate "," fields ++ "}"
+  where
+    fields =
+      [ jsonField "accepted" (if accepted diag then "true" else "false")
+      , jsonField "backend" (jsonString (backendLabel diag))
+      , jsonField "scenario" (jsonMaybeString (scenarioLabel diag))
+      , jsonField "kind" (jsonString (kind diag))
+      , jsonField "message" (jsonString (message diag))
+      , jsonField "row_index" (jsonMaybeInt (rowIndex diag))
+      , jsonField "lifecycle_index" (jsonMaybeInt (lifecycleIndex diag))
+      ]
+
+emitDiagnostic :: Diagnostic -> IO ()
+emitDiagnostic diag = do
+  putStrLn (renderDiagnostic diag)
+  let label = case scenarioLabel diag of
+        Nothing -> backendLabel diag
+        Just s -> backendLabel diag ++ "-" ++ s
+      status = if accepted diag then "accepted" else "rejected"
+  hPutStrLn stderr (label ++ ": " ++ status ++ ": " ++ message diag)
+
+mkSuccess :: String -> Maybe String -> Diagnostic
+mkSuccess backend scenario =
+  Diagnostic
+    { accepted = True
+    , kind = "accepted"
+    , message = "workload acceptance accepted the emitted lifecycle/rows trace"
+    , rowIndex = Nothing
+    , lifecycleIndex = Nothing
+    , backendLabel = backend
+    , scenarioLabel = scenario
+    }
+
+mkFailure :: String -> Maybe String -> String -> String -> Maybe Int -> Maybe Int -> Diagnostic
+mkFailure backend scenario diagKind diagMessage rowIx lifecycleIx =
+  Diagnostic
+    { accepted = False
+    , kind = diagKind
+    , message = diagMessage
+    , rowIndex = rowIx
+    , lifecycleIndex = lifecycleIx
+    , backendLabel = backend
+    , scenarioLabel = scenario
+    }
 
 main :: IO ()
 main = do
   args <- getArgs
-  let (backend, rowsPath, lifecyclePath) = case args of
-        (x:y:z:_) -> (x, y, z)
-        _ -> ("backend", "", "")
+  let (backend, scenarioRaw, rowsPath, lifecyclePath) = case args of
+        (w:x:y:z:_) -> (w, x, y, z)
+        _ -> ("backend", "-", "", "")
+      scenario = if scenarioRaw == "-" then Nothing else Just scenarioRaw
   if null rowsPath || null lifecyclePath
     then do
-      hPutStrLn stderr "backend: expected arguments <backend> <rows-file> <lifecycle-file>"
+      emitDiagnostic
+        (mkFailure backend scenario "internal-checker-error"
+          "expected arguments <backend> <scenario-or--> <rows-file> <lifecycle-file>"
+          Nothing Nothing)
       exitFailure
     else do
       rowsInput <- readFile rowsPath
       lifecycleInput <- readFile lifecyclePath
-      case rowsFromLines (lines rowsInput) of
-        Left err -> do
-          hPutStrLn stderr (backend ++ ": failed to parse trace rows: " ++ err)
+      case rowsFromLines 0 (lines rowsInput) of
+        Left (idx, err) -> do
+          emitDiagnostic
+            (mkFailure backend scenario "rows-parse-failure"
+              ("failed to parse extracted trace rows: " ++ err)
+              (Just idx) Nothing)
           exitFailure
         Right rows ->
-          case lifecycleFromLines (lines lifecycleInput) of
-            Left err -> do
-              hPutStrLn stderr (backend ++ ": failed to parse task lifecycle: " ++ err)
+          case lifecycleFromLines 0 (lines lifecycleInput) of
+            Left (idx, err) -> do
+              emitDiagnostic
+                (mkFailure backend scenario "lifecycle-parse-failure"
+                  ("failed to parse extracted task lifecycle: " ++ err)
+                  Nothing (Just idx))
               exitFailure
             Right lifecycle ->
               case A.awk_workload_accepts_trace lifecycle rows of
                 A.True -> do
-                  putStrLn (backend ++ ": acceptance checker accepted workload trace")
+                  emitDiagnostic (mkSuccess backend scenario)
                   exitSuccess
                 A.False -> do
-                  hPutStrLn stderr (backend ++ ": acceptance checker rejected workload trace")
+                  emitDiagnostic
+                    (mkFailure backend scenario "workload-family-rejection"
+                      "workload acceptance rejected the emitted lifecycle/rows trace"
+                      Nothing Nothing)
                   exitFailure
