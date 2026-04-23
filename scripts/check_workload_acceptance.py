@@ -116,6 +116,8 @@ def main() -> int:
     parser.add_argument("--runhaskell", default="runhaskell", help="Path or command name for runhaskell.")
     parser.add_argument("--runner", type=pathlib.Path, required=True, help="Path to the Haskell workload acceptance runner.")
     parser.add_argument("--checker-dir", type=pathlib.Path, help="Directory containing the extracted AwkernelWorkloadAcceptance module.")
+    parser.add_argument("--candidate-runner", type=pathlib.Path, help="Optional Haskell runner that generates and validates candidate tables from accepted rows.")
+    parser.add_argument("--candidate-output", type=pathlib.Path, help="Optional output path for the generated candidate_table.v. If omitted, a temporary file is used.")
     args = parser.parse_args()
 
     label = args.backend if not args.scenario else f"{args.backend}-{args.scenario}"
@@ -153,20 +155,47 @@ def main() -> int:
         ]
         result = subprocess.run(cmd, text=True, capture_output=True)
 
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
 
-    if result.returncode != 0:
-        stderr = result.stderr
-        if "failed to parse trace rows" in stderr:
-            raise SystemExit(f"{label}: failed to parse extracted trace rows")
-        if "failed to parse task lifecycle" in stderr:
-            raise SystemExit(f"{label}: failed to parse extracted task lifecycle")
-        if "acceptance checker rejected workload trace" in stderr:
-            raise SystemExit(f"{label}: workload acceptance rejected emitted lifecycle/rows trace")
-        raise SystemExit(f"{label}: workload acceptance checker exited with status {result.returncode}")
+        if result.returncode != 0:
+            stderr = result.stderr
+            if "failed to parse trace rows" in stderr:
+                raise SystemExit(f"{label}: failed to parse extracted trace rows")
+            if "failed to parse task lifecycle" in stderr:
+                raise SystemExit(f"{label}: failed to parse extracted task lifecycle")
+            if "acceptance checker rejected workload trace" in stderr:
+                raise SystemExit(f"{label}: workload acceptance rejected emitted lifecycle/rows trace")
+            raise SystemExit(f"{label}: workload acceptance checker exited with status {result.returncode}")
+
+        if args.candidate_runner is not None:
+            candidate_output = args.candidate_output or (tmpdir_path / "candidate_table.v")
+            candidate_cmd = [
+                runhaskell,
+                f"-i{checker_dir}",
+                str(args.candidate_runner),
+                label,
+                str(rows_path),
+                str(candidate_output),
+            ]
+            candidate_result = subprocess.run(candidate_cmd, text=True, capture_output=True)
+
+            if candidate_result.stdout:
+                print(candidate_result.stdout, end="")
+            if candidate_result.stderr:
+                print(candidate_result.stderr, end="", file=sys.stderr)
+
+            if candidate_result.returncode != 0:
+                stderr = candidate_result.stderr
+                if "failed to parse trace rows" in stderr:
+                    raise SystemExit(f"{label}: failed to parse extracted trace rows for candidate-table generation")
+                if "candidate-table sanity check failed" in stderr:
+                    raise SystemExit(f"{label}: candidate-table check rejected the accepted trace rows")
+                raise SystemExit(f"{label}: candidate-table generator exited with status {candidate_result.returncode}")
+            if not candidate_output.is_file():
+                raise SystemExit(f"{label}: candidate-table generator did not create {candidate_output}")
     return result.returncode
 
 

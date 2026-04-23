@@ -498,16 +498,6 @@ check-workload-trace-qemu-2cpu: capture-workload-log-qemu-2cpu
 		--begin BEGIN_TASK_LIFECYCLE \
 		--end END_TASK_LIFECYCLE \
 		--label task-lifecycle
-	@tmp_candidate_table=$$(mktemp /tmp/awkernel_workload_candidate_table.XXXXXX.v); \
-	python3 scripts/generate_workload_candidate_table.py \
-		--backend qemu-workload \
-		--scenario ${WORKLOAD_SCENARIO} \
-		--log ${WORKLOAD_TRACE_QEMU_LOG} \
-		--runhaskell ${WORKLOAD_ACCEPT_RUNHASKELL} \
-		--runner ${WORKLOAD_CANDIDATE_RUNNER} \
-		--output $$tmp_candidate_table; \
-	diff -u ${WORKLOAD_TRACE_CANDIDATE_TABLE_EXPECTED} $$tmp_candidate_table; \
-	rm -f $$tmp_candidate_table
 
 prove-workload-candidate-table-qemu-2cpu:
 	python3 scripts/stage_workload_generated_modules.py \
@@ -533,7 +523,8 @@ check-workload-accept-qemu-2cpu: capture-workload-log-qemu-2cpu
 		--scenario ${WORKLOAD_SCENARIO} \
 		--log ${WORKLOAD_TRACE_QEMU_LOG} \
 		--runhaskell ${WORKLOAD_ACCEPT_RUNHASKELL} \
-		--runner ${WORKLOAD_ACCEPT_RUNNER}
+		--runner ${WORKLOAD_ACCEPT_RUNNER} \
+		--candidate-runner ${WORKLOAD_CANDIDATE_RUNNER}
 
 check-workload-accept-kvm-2cpu: capture-workload-log-kvm-2cpu
 	python3 scripts/check_workload_acceptance.py \
@@ -541,7 +532,8 @@ check-workload-accept-kvm-2cpu: capture-workload-log-kvm-2cpu
 		--scenario ${WORKLOAD_SCENARIO} \
 		--log ${WORKLOAD_TRACE_KVM_LOG} \
 		--runhaskell ${WORKLOAD_ACCEPT_RUNHASKELL} \
-		--runner ${WORKLOAD_ACCEPT_RUNNER}
+		--runner ${WORKLOAD_ACCEPT_RUNNER} \
+		--candidate-runner ${WORKLOAD_CANDIDATE_RUNNER}
 
 check-workload-accept-2cpu-all:
 	@for scenario in $(WORKLOAD_SCENARIOS); do \
