@@ -237,13 +237,22 @@ main = do
                       Nothing Nothing)
                   exitFailure
                 A.True ->
-                  case A.first_non_fifo_sched_trace_index schedTrace of
+                  case A.first_non_scheduler_relation_sched_trace_index taskTrace schedTrace of
                     A.None -> do
                       emitDiagnostic (mkSuccess backend scenario)
                       exitSuccess
-                    A.Some idx -> do
-                      emitDiagnostic
-                        (mkFailure backend scenario "global-fifo-rejection"
-                          "the emitted sched_trace violates the local GlobalFIFO choose-order check"
-                          (Just (natToInt idx)) Nothing)
-                      exitFailure
+                    A.Some relationIdx ->
+                      case A.first_non_fifo_sched_trace_index schedTrace of
+                        A.Some fifoIdx
+                          | natToInt fifoIdx == natToInt relationIdx -> do
+                              emitDiagnostic
+                                (mkFailure backend scenario "global-fifo-rejection"
+                                  "the emitted sched_trace violates the local GlobalFIFO choose-order check"
+                                  (Just (natToInt fifoIdx)) Nothing)
+                              exitFailure
+                        _ -> do
+                          emitDiagnostic
+                            (mkFailure backend scenario "scheduler-relation-rejection"
+                              "the emitted sched_trace violates the extracted GlobalFIFO scheduler-relation check"
+                              (Just (natToInt relationIdx)) Nothing)
+                          exitFailure

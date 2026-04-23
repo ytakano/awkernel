@@ -293,9 +293,9 @@ def normalize_runner_payload(
     elif kind == "workload-family-rejection":
         if any(value is not None for value in [sched_trace_index, task_trace_index, log_line_begin, log_line_end]):
             raise make_internal_checker_error("workload-family-rejection must leave all location fields null")
-    elif kind == "global-fifo-rejection":
+    elif kind in {"global-fifo-rejection", "scheduler-relation-rejection"}:
         if sched_trace_index is None or task_trace_index is not None:
-            raise make_internal_checker_error("global-fifo-rejection must carry only sched_trace_index")
+            raise make_internal_checker_error(f"{kind} must carry only sched_trace_index")
         log_line_begin, log_line_end = normalized_log_line(sched_trace_start_line, sched_trace_index)
     elif kind == "internal-checker-error":
         if any(value is not None for value in [sched_trace_index, task_trace_index, log_line_begin, log_line_end]):

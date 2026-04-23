@@ -521,6 +521,43 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
         "runhaskell not available",
     )
+    def test_scheduler_relation_rejection_reports_sched_trace_location(self) -> None:
+        code, payload, stdout, _ = self.run_wrapper(
+            log_text="\n".join(
+                [
+                    "BEGIN_SCHED_TRACE",
+                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    "1\tChoose\t1\t1\t-\t1,2\tfalse\t1",
+                    "1\tDispatch\t1\t1\t1\t2\tfalse\t-",
+                    "1\tComplete\t1\t-\t-\t2\ttrue\t-",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "Spawn\t1\t-",
+                    "Spawn\t2\t1",
+                    "Runnable\t1\t-",
+                    "Runnable\t2\t-",
+                    "Choose\t1\t-",
+                    "Dispatch\t1\t-",
+                    "Complete\t1\t-",
+                    "END_TASK_TRACE",
+                ]
+            ),
+            runhaskell=self.runhaskell,
+            runner=self.runner,
+            checker_dir=self.checker_dir,
+        )
+        self.assertEqual(code, RUNNER_FAILURE_EXIT)
+        self.assert_single_json_stdout(stdout)
+        self.assert_common_failure(payload, kind="scheduler-relation-rejection")
+        self.assertEqual(payload["sched_trace_index"], 1)
+        self.assertIsNone(payload["task_trace_index"])
+        self.assertEqual(payload["log_line_begin"], 3)
+        self.assertEqual(payload["log_line_end"], 3)
+
+    @unittest.skipUnless(
+        (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
+        "runhaskell not available",
+    )
     def test_minimal_accepted_trace_returns_fixed_success_schema(self) -> None:
         code, payload, stdout, stderr = self.run_wrapper(
             log_text="\n".join(
