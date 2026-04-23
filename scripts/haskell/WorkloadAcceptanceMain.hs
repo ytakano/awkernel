@@ -20,6 +20,10 @@ natFromInteger n
   | n <= 0 = A.O
   | otherwise = A.S (natFromInteger (n - 1))
 
+natToInt :: A.Nat -> Int
+natToInt A.O = 0
+natToInt (A.S n) = 1 + natToInt n
+
 natFromField :: String -> Either String A.Nat
 natFromField field
   | not (null field) && all isDigit field = Right (natFromInteger (read field))
@@ -226,12 +230,20 @@ main = do
               exitFailure
             Right taskTrace ->
               case A.awk_workload_accepts_sched_trace taskTrace schedTrace of
-                A.True -> do
-                  emitDiagnostic (mkSuccess backend scenario)
-                  exitSuccess
                 A.False -> do
                   emitDiagnostic
                     (mkFailure backend scenario "workload-family-rejection"
                       "workload acceptance rejected the emitted task_trace/sched_trace pair"
                       Nothing Nothing)
                   exitFailure
+                A.True ->
+                  case A.first_non_fifo_sched_trace_index schedTrace of
+                    A.None -> do
+                      emitDiagnostic (mkSuccess backend scenario)
+                      exitSuccess
+                    A.Some idx -> do
+                      emitDiagnostic
+                        (mkFailure backend scenario "global-fifo-rejection"
+                          "the emitted sched_trace violates the local GlobalFIFO choose-order check"
+                          (Just (natToInt idx)) Nothing)
+                      exitFailure
