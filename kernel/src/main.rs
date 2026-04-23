@@ -11,7 +11,14 @@
 extern crate alloc;
 
 use awkernel_async_lib::{scheduler::wake_task, task};
-#[cfg(not(any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")))]
+#[cfg(not(any(
+    feature = "baseline_trace_vm",
+    feature = "handoff_trace_vm",
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm"
+)))]
 use awkernel_async_lib::scheduler::SchedulerType;
 use core::{
     fmt::Debug,
@@ -63,7 +70,26 @@ fn main<Info: Debug>(kernel_info: KernelInfo<Info>) {
         #[cfg(feature = "handoff_trace_vm")]
         userland::install_handoff_trace_vm();
 
-        #[cfg(not(any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")))]
+        #[cfg(feature = "single_async_trace_vm")]
+        userland::install_single_async_trace_vm();
+
+        #[cfg(feature = "nested_spawn_trace_vm")]
+        userland::install_nested_spawn_trace_vm();
+
+        #[cfg(feature = "multi_async_trace_vm")]
+        userland::install_multi_async_trace_vm();
+
+        #[cfg(feature = "sleep_wakeup_trace_vm")]
+        userland::install_sleep_wakeup_trace_vm();
+
+        #[cfg(not(any(
+            feature = "baseline_trace_vm",
+            feature = "handoff_trace_vm",
+            feature = "single_async_trace_vm",
+            feature = "nested_spawn_trace_vm",
+            feature = "multi_async_trace_vm",
+            feature = "sleep_wakeup_trace_vm"
+        )))]
         task::spawn(
             "main".into(),
             async move { userland::main().await },

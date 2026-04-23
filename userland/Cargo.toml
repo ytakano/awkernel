@@ -85,6 +85,22 @@ handoff_trace_vm = [
     "awkernel_async_lib/baseline_trace",
     "awkernel_async_lib/handoff_trace_vm",
 ]
+single_async_trace_vm = [
+    "awkernel_async_lib/baseline_trace",
+    "awkernel_async_lib/single_async_trace_vm",
+]
+nested_spawn_trace_vm = [
+    "awkernel_async_lib/baseline_trace",
+    "awkernel_async_lib/nested_spawn_trace_vm",
+]
+multi_async_trace_vm = [
+    "awkernel_async_lib/baseline_trace",
+    "awkernel_async_lib/multi_async_trace_vm",
+]
+sleep_wakeup_trace_vm = [
+    "awkernel_async_lib/baseline_trace",
+    "awkernel_async_lib/sleep_wakeup_trace_vm",
+]
 
 # Evaluation applications
 rd_gen_to_dags = ["dep:rd_gen_to_dags"]
