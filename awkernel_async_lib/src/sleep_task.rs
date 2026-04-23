@@ -56,8 +56,8 @@ impl Future for Sleep {
                     )
                 ))]
                 if let Some(task_id) = task::get_current_task(awkernel_lib::cpu::cpu_id()) {
-                    baseline_trace::record_lifecycle(
-                        baseline_trace::TaskLifecycleEvent::Sleep { task_id },
+                    baseline_trace::record_task_trace(
+                        baseline_trace::TaskTraceEvent::Sleep { task_id },
                     );
                 }
 

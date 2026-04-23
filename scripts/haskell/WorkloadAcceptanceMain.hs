@@ -54,61 +54,61 @@ eventFromFields "Complete" a "-" = A.EvComplete <$> natFromField a
 eventFromFields "Stutter" "-" "-" = Right A.EvStutter
 eventFromFields tag _ _ = Left ("unsupported event fields: " ++ show tag)
 
-rowFromFields :: [String] -> Either String A.AwkernelCapturedRow
-rowFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField] = do
+schedTraceEntryFromFields :: [String] -> Either String A.AwkernelSchedTraceEntry
+schedTraceEntryFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField] = do
   cpu <- natFromField cpuField
   event <- eventFromFields eventTag eventA eventB
   current <- optionNatFromField currentField
   runnable <- listFromCsv runnableCsv
   needResched <- boolFromField needReschedField
   dispatch <- optionNatFromField dispatchField
-  pure (A.MkAwkernelCapturedRow cpu event current runnable needResched dispatch)
-rowFromFields fields =
+  pure (A.MkAwkernelSchedTraceEntry cpu event current runnable needResched dispatch)
+schedTraceEntryFromFields fields =
   Left ("expected 8 TSV columns, got " ++ show (length fields) ++ " from " ++ show fields)
 
-rowsFromLines :: Int -> [String] -> Either (Int, String) (A.List A.AwkernelCapturedRow)
-rowsFromLines _ [] = Right A.Nil
-rowsFromLines index (line:rest)
-  | null line = rowsFromLines (index + 1) rest
+schedTraceFromLines :: Int -> [String] -> Either (Int, String) (A.List A.AwkernelSchedTraceEntry)
+schedTraceFromLines _ [] = Right A.Nil
+schedTraceFromLines index (line:rest)
+  | null line = schedTraceFromLines (index + 1) rest
   | otherwise = do
-      row <- either (Left . (,) index) Right (rowFromFields (splitOn '\t' line))
-      rows <- rowsFromLines (index + 1) rest
-      pure (A.Cons row rows)
+      entry <- either (Left . (,) index) Right (schedTraceEntryFromFields (splitOn '\t' line))
+      schedTrace <- schedTraceFromLines (index + 1) rest
+      pure (A.Cons entry schedTrace)
 
-lifecycleKindFromField :: String -> Either String A.TaskLifecycleKind
-lifecycleKindFromField "Spawn" = Right A.LkSpawn
-lifecycleKindFromField "Runnable" = Right A.LkRunnable
-lifecycleKindFromField "Choose" = Right A.LkChoose
-lifecycleKindFromField "Dispatch" = Right A.LkDispatch
-lifecycleKindFromField "Sleep" = Right A.LkSleep
-lifecycleKindFromField "JoinWait" = Right A.LkJoinWait
-lifecycleKindFromField "Complete" = Right A.LkComplete
-lifecycleKindFromField field = Left ("unsupported lifecycle kind: " ++ show field)
+taskTraceKindFromField :: String -> Either String A.AwkernelTaskTraceKind
+taskTraceKindFromField "Spawn" = Right A.LkSpawn
+taskTraceKindFromField "Runnable" = Right A.LkRunnable
+taskTraceKindFromField "Choose" = Right A.LkChoose
+taskTraceKindFromField "Dispatch" = Right A.LkDispatch
+taskTraceKindFromField "Sleep" = Right A.LkSleep
+taskTraceKindFromField "JoinWait" = Right A.LkJoinWait
+taskTraceKindFromField "Complete" = Right A.LkComplete
+taskTraceKindFromField field = Left ("unsupported task_trace kind: " ++ show field)
 
-lifecycleRecordFromFields :: [String] -> Either String A.TaskLifecycleRecord
-lifecycleRecordFromFields [kindField, subjectField, relatedField] = do
-  kind <- lifecycleKindFromField kindField
+taskTraceEntryFromFields :: [String] -> Either String A.AwkernelTaskTraceEntry
+taskTraceEntryFromFields [kindField, subjectField, relatedField] = do
+  kind <- taskTraceKindFromField kindField
   subject <- natFromField subjectField
   related <- optionNatFromField relatedField
-  pure (A.MkTaskLifecycleRecord kind subject related)
-lifecycleRecordFromFields fields =
-  Left ("expected 3 TSV lifecycle columns, got " ++ show (length fields) ++ " from " ++ show fields)
+  pure (A.MkAwkernelTaskTraceEntry kind subject related)
+taskTraceEntryFromFields fields =
+  Left ("expected 3 TSV task_trace columns, got " ++ show (length fields) ++ " from " ++ show fields)
 
-lifecycleFromLines :: Int -> [String] -> Either (Int, String) (A.List A.TaskLifecycleRecord)
-lifecycleFromLines _ [] = Right A.Nil
-lifecycleFromLines index (line:rest)
-  | null line = lifecycleFromLines (index + 1) rest
+taskTraceFromLines :: Int -> [String] -> Either (Int, String) (A.List A.AwkernelTaskTraceEntry)
+taskTraceFromLines _ [] = Right A.Nil
+taskTraceFromLines index (line:rest)
+  | null line = taskTraceFromLines (index + 1) rest
   | otherwise = do
-      record <- either (Left . (,) index) Right (lifecycleRecordFromFields (splitOn '\t' line))
-      records <- lifecycleFromLines (index + 1) rest
+      record <- either (Left . (,) index) Right (taskTraceEntryFromFields (splitOn '\t' line))
+      records <- taskTraceFromLines (index + 1) rest
       pure (A.Cons record records)
 
 data Diagnostic = Diagnostic
   { accepted :: Bool
   , kind :: String
   , message :: String
-  , rowIndex :: Maybe Int
-  , lifecycleIndex :: Maybe Int
+  , schedTraceIndex :: Maybe Int
+  , taskTraceIndex :: Maybe Int
   , logLineBegin :: Maybe Int
   , logLineEnd :: Maybe Int
   , backendLabel :: String
@@ -149,8 +149,8 @@ renderDiagnostic diag =
       , jsonField "scenario" (jsonMaybeString (scenarioLabel diag))
       , jsonField "kind" (jsonString (kind diag))
       , jsonField "message" (jsonString (message diag))
-      , jsonField "row_index" (jsonMaybeInt (rowIndex diag))
-      , jsonField "lifecycle_index" (jsonMaybeInt (lifecycleIndex diag))
+      , jsonField "sched_trace_index" (jsonMaybeInt (schedTraceIndex diag))
+      , jsonField "task_trace_index" (jsonMaybeInt (taskTraceIndex diag))
       , jsonField "log_line_begin" (jsonMaybeInt (logLineBegin diag))
       , jsonField "log_line_end" (jsonMaybeInt (logLineEnd diag))
       ]
@@ -169,9 +169,9 @@ mkSuccess backend scenario =
   Diagnostic
     { accepted = True
     , kind = "accepted"
-    , message = "workload acceptance accepted the emitted lifecycle/rows trace"
-    , rowIndex = Nothing
-    , lifecycleIndex = Nothing
+    , message = "workload acceptance accepted the emitted task_trace/sched_trace pair"
+    , schedTraceIndex = Nothing
+    , taskTraceIndex = Nothing
     , logLineBegin = Nothing
     , logLineEnd = Nothing
     , backendLabel = backend
@@ -179,13 +179,13 @@ mkSuccess backend scenario =
     }
 
 mkFailure :: String -> Maybe String -> String -> String -> Maybe Int -> Maybe Int -> Diagnostic
-mkFailure backend scenario diagKind diagMessage rowIx lifecycleIx =
+mkFailure backend scenario diagKind diagMessage schedTraceIx taskTraceIx =
   Diagnostic
     { accepted = False
     , kind = diagKind
     , message = diagMessage
-    , rowIndex = rowIx
-    , lifecycleIndex = lifecycleIx
+    , schedTraceIndex = schedTraceIx
+    , taskTraceIndex = taskTraceIx
     , logLineBegin = Nothing
     , logLineEnd = Nothing
     , backendLabel = backend
@@ -195,43 +195,43 @@ mkFailure backend scenario diagKind diagMessage rowIx lifecycleIx =
 main :: IO ()
 main = do
   args <- getArgs
-  let (backend, scenarioRaw, rowsPath, lifecyclePath) = case args of
+  let (backend, scenarioRaw, schedTracePath, taskTracePath) = case args of
         (w:x:y:z:_) -> (w, x, y, z)
         _ -> ("backend", "-", "", "")
       scenario = if scenarioRaw == "-" then Nothing else Just scenarioRaw
-  if null rowsPath || null lifecyclePath
+  if null schedTracePath || null taskTracePath
     then do
       emitDiagnostic
         (mkFailure backend scenario "internal-checker-error"
-          "expected arguments <backend> <scenario-or--> <rows-file> <lifecycle-file>"
+          "expected arguments <backend> <scenario-or--> <sched-trace-file> <task-trace-file>"
           Nothing Nothing)
       exitFailure
     else do
-      rowsInput <- readFile rowsPath
-      lifecycleInput <- readFile lifecyclePath
-      case rowsFromLines 0 (lines rowsInput) of
+      schedTraceInput <- readFile schedTracePath
+      taskTraceInput <- readFile taskTracePath
+      case schedTraceFromLines 0 (lines schedTraceInput) of
         Left (idx, err) -> do
           emitDiagnostic
-            (mkFailure backend scenario "rows-parse-failure"
-              ("failed to parse extracted trace rows: " ++ err)
+            (mkFailure backend scenario "sched-trace-parse-failure"
+              ("failed to parse extracted sched_trace: " ++ err)
               (Just idx) Nothing)
           exitFailure
-        Right rows ->
-          case lifecycleFromLines 0 (lines lifecycleInput) of
+        Right schedTrace ->
+          case taskTraceFromLines 0 (lines taskTraceInput) of
             Left (idx, err) -> do
               emitDiagnostic
-                (mkFailure backend scenario "lifecycle-parse-failure"
-                  ("failed to parse extracted task lifecycle: " ++ err)
+                (mkFailure backend scenario "task-trace-parse-failure"
+                  ("failed to parse extracted task_trace: " ++ err)
                   Nothing (Just idx))
               exitFailure
-            Right lifecycle ->
-              case A.awk_workload_accepts_trace lifecycle rows of
+            Right taskTrace ->
+              case A.awk_workload_accepts_sched_trace taskTrace schedTrace of
                 A.True -> do
                   emitDiagnostic (mkSuccess backend scenario)
                   exitSuccess
                 A.False -> do
                   emitDiagnostic
                     (mkFailure backend scenario "workload-family-rejection"
-                      "workload acceptance rejected the emitted lifecycle/rows trace"
+                      "workload acceptance rejected the emitted task_trace/sched_trace pair"
                       Nothing Nothing)
                   exitFailure

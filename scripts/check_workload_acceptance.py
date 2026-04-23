@@ -13,10 +13,10 @@ import tempfile
 from typing import Any
 
 
-TRACE_ROWS_BEGIN = "BEGIN_TRACE_ROWS"
-TRACE_ROWS_END = "END_TRACE_ROWS"
-TASK_LIFECYCLE_BEGIN = "BEGIN_TASK_LIFECYCLE"
-TASK_LIFECYCLE_END = "END_TASK_LIFECYCLE"
+SCHED_TRACE_BEGIN = "BEGIN_SCHED_TRACE"
+SCHED_TRACE_END = "END_SCHED_TRACE"
+TASK_TRACE_BEGIN = "BEGIN_TASK_TRACE"
+TASK_TRACE_END = "END_TASK_TRACE"
 
 WRAPPER_FAILURE_EXIT = 2
 RUNNER_FAILURE_EXIT = 1
@@ -28,8 +28,8 @@ EXPECTED_DIAGNOSTIC_KEYS = {
     "scenario",
     "kind",
     "message",
-    "row_index",
-    "lifecycle_index",
+    "sched_trace_index",
+    "task_trace_index",
     "log_line_begin",
     "log_line_end",
 }
@@ -175,8 +175,8 @@ def emit_diagnostic(
     scenario: str | None,
     kind: str,
     message: str,
-    row_index: int | None = None,
-    lifecycle_index: int | None = None,
+    sched_trace_index: int | None = None,
+    task_trace_index: int | None = None,
     log_line_begin: int | None = None,
     log_line_end: int | None = None,
 ) -> None:
@@ -186,8 +186,8 @@ def emit_diagnostic(
         "scenario": scenario,
         "kind": kind,
         "message": message,
-        "row_index": row_index,
-        "lifecycle_index": lifecycle_index,
+        "sched_trace_index": sched_trace_index,
+        "task_trace_index": task_trace_index,
         "log_line_begin": log_line_begin,
         "log_line_end": log_line_end,
     }
@@ -237,7 +237,7 @@ def parse_runner_payload(stdout: str) -> dict[str, Any]:
             raise make_internal_checker_error(f"runner diagnostics field '{key}' must be a string")
     if payload["scenario"] is not None and not isinstance(payload["scenario"], str):
         raise make_internal_checker_error("runner diagnostics field 'scenario' must be null or a string")
-    for key in ["row_index", "lifecycle_index", "log_line_begin", "log_line_end"]:
+    for key in ["sched_trace_index", "task_trace_index", "log_line_begin", "log_line_end"]:
         if payload[key] is not None and not isinstance(payload[key], int):
             raise make_internal_checker_error(f"runner diagnostics field '{key}' must be null or an integer")
 
@@ -259,8 +259,8 @@ def normalize_runner_payload(
     payload: dict[str, Any],
     backend: str,
     scenario: str | None,
-    rows_start_line: int,
-    lifecycle_start_line: int,
+    sched_trace_start_line: int,
+    task_trace_start_line: int,
     returncode: int,
 ) -> dict[str, Any]:
     accepted = payload["accepted"]
@@ -272,29 +272,29 @@ def normalize_runner_payload(
         raise make_internal_checker_error("runner reported accepted=false but did not return the runner failure exit code")
 
     kind = payload["kind"]
-    row_index = payload["row_index"]
-    lifecycle_index = payload["lifecycle_index"]
+    sched_trace_index = payload["sched_trace_index"]
+    task_trace_index = payload["task_trace_index"]
     log_line_begin = payload["log_line_begin"]
     log_line_end = payload["log_line_end"]
 
     if accepted:
         if kind != "accepted":
             raise make_internal_checker_error("runner success payload must use kind='accepted'")
-        if any(value is not None for value in [row_index, lifecycle_index, log_line_begin, log_line_end]):
+        if any(value is not None for value in [sched_trace_index, task_trace_index, log_line_begin, log_line_end]):
             raise make_internal_checker_error("runner success payload must leave all location fields null")
-    elif kind in {"rows-parse-failure"}:
-        if row_index is None or lifecycle_index is not None:
-            raise make_internal_checker_error("rows-parse-failure must carry only row_index")
-        log_line_begin, log_line_end = normalized_log_line(rows_start_line, row_index)
-    elif kind in {"lifecycle-parse-failure"}:
-        if lifecycle_index is None or row_index is not None:
-            raise make_internal_checker_error("lifecycle-parse-failure must carry only lifecycle_index")
-        log_line_begin, log_line_end = normalized_log_line(lifecycle_start_line, lifecycle_index)
+    elif kind in {"sched-trace-parse-failure"}:
+        if sched_trace_index is None or task_trace_index is not None:
+            raise make_internal_checker_error("sched-trace-parse-failure must carry only sched_trace_index")
+        log_line_begin, log_line_end = normalized_log_line(sched_trace_start_line, sched_trace_index)
+    elif kind in {"task-trace-parse-failure"}:
+        if task_trace_index is None or sched_trace_index is not None:
+            raise make_internal_checker_error("task-trace-parse-failure must carry only task_trace_index")
+        log_line_begin, log_line_end = normalized_log_line(task_trace_start_line, task_trace_index)
     elif kind == "workload-family-rejection":
-        if any(value is not None for value in [row_index, lifecycle_index, log_line_begin, log_line_end]):
+        if any(value is not None for value in [sched_trace_index, task_trace_index, log_line_begin, log_line_end]):
             raise make_internal_checker_error("workload-family-rejection must leave all location fields null")
     elif kind == "internal-checker-error":
-        if any(value is not None for value in [row_index, lifecycle_index, log_line_begin, log_line_end]):
+        if any(value is not None for value in [sched_trace_index, task_trace_index, log_line_begin, log_line_end]):
             raise make_internal_checker_error("internal-checker-error must leave all location fields null")
     else:
         raise make_internal_checker_error(f"runner emitted unsupported diagnostics kind: {kind}")
@@ -305,8 +305,8 @@ def normalize_runner_payload(
         "scenario": scenario,
         "kind": kind,
         "message": payload["message"],
-        "row_index": row_index,
-        "lifecycle_index": lifecycle_index,
+        "sched_trace_index": sched_trace_index,
+        "task_trace_index": task_trace_index,
         "log_line_begin": log_line_begin,
         "log_line_end": log_line_end,
     }
@@ -314,7 +314,7 @@ def normalize_runner_payload(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the workload lifecycle+rows acceptance gate on a captured serial log."
+        description="Run the workload task_trace+sched_trace acceptance gate on a captured serial log."
     )
     parser.add_argument("--log", type=pathlib.Path, required=True, help="Path to the captured serial log.")
     parser.add_argument("--backend", default="backend", help="Backend label for diagnostics.")
@@ -330,21 +330,21 @@ def main() -> int:
             raise AcceptanceError("runner-not-found", f"Haskell runner not found: {args.runner}")
         checker_dir = resolve_checker_dir(args.checker_dir)
         lines = load_lines(args.log)
-        rows, rows_start_line, _ = extract_block(
+        sched_trace, sched_trace_start_line, _ = extract_block(
             lines,
-            TRACE_ROWS_BEGIN,
-            TRACE_ROWS_END,
-            missing_kind="missing-rows-block",
-            empty_kind="empty-rows-block",
-            empty_message="trace rows block is empty",
+            SCHED_TRACE_BEGIN,
+            SCHED_TRACE_END,
+            missing_kind="missing-sched-trace-block",
+            empty_kind="empty-sched-trace-block",
+            empty_message="sched_trace block is empty",
         )
-        lifecycle, lifecycle_start_line, _ = extract_block(
+        task_trace, task_trace_start_line, _ = extract_block(
             lines,
-            TASK_LIFECYCLE_BEGIN,
-            TASK_LIFECYCLE_END,
-            missing_kind="missing-lifecycle-block",
-            empty_kind="empty-lifecycle-block",
-            empty_message="task lifecycle block is empty",
+            TASK_TRACE_BEGIN,
+            TASK_TRACE_END,
+            missing_kind="missing-task-trace-block",
+            empty_kind="empty-task-trace-block",
+            empty_message="task_trace block is empty",
         )
     except AcceptanceError as exc:
         emit_diagnostic(
@@ -360,10 +360,10 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="awkernel-workload-accept-") as tmpdir:
         tmpdir_path = pathlib.Path(tmpdir)
-        rows_path = tmpdir_path / "rows.tsv"
-        lifecycle_path = tmpdir_path / "lifecycle.tsv"
-        rows_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-        lifecycle_path.write_text("\n".join(lifecycle) + "\n", encoding="utf-8")
+        sched_trace_path = tmpdir_path / "sched_trace.tsv"
+        task_trace_path = tmpdir_path / "task_trace.tsv"
+        sched_trace_path.write_text("\n".join(sched_trace) + "\n", encoding="utf-8")
+        task_trace_path.write_text("\n".join(task_trace) + "\n", encoding="utf-8")
 
         cmd = [
             runhaskell,
@@ -371,8 +371,8 @@ def main() -> int:
             str(args.runner),
             args.backend,
             args.scenario or "-",
-            str(rows_path),
-            str(lifecycle_path),
+            str(sched_trace_path),
+            str(task_trace_path),
         ]
         result = subprocess.run(cmd, text=True, capture_output=True)
 
@@ -382,8 +382,8 @@ def main() -> int:
                 payload=payload,
                 backend=args.backend,
                 scenario=args.scenario,
-                rows_start_line=rows_start_line,
-                lifecycle_start_line=lifecycle_start_line,
+                sched_trace_start_line=sched_trace_start_line,
+                task_trace_start_line=task_trace_start_line,
                 returncode=result.returncode,
             )
         except AcceptanceError as exc:

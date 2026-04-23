@@ -41,8 +41,10 @@ pub const ROCQ_BEGIN_MARKER: &str = "BEGIN_ROCQ_TRACE";
 pub const ROCQ_END_MARKER: &str = "END_ROCQ_TRACE";
 pub const TRACE_ROWS_BEGIN_MARKER: &str = "BEGIN_TRACE_ROWS";
 pub const TRACE_ROWS_END_MARKER: &str = "END_TRACE_ROWS";
-pub const TASK_LIFECYCLE_BEGIN_MARKER: &str = "BEGIN_TASK_LIFECYCLE";
-pub const TASK_LIFECYCLE_END_MARKER: &str = "END_TASK_LIFECYCLE";
+pub const SCHED_TRACE_BEGIN_MARKER: &str = "BEGIN_SCHED_TRACE";
+pub const SCHED_TRACE_END_MARKER: &str = "END_SCHED_TRACE";
+pub const TASK_TRACE_BEGIN_MARKER: &str = "BEGIN_TASK_TRACE";
+pub const TASK_TRACE_END_MARKER: &str = "END_TASK_TRACE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaselineTraceEvent {
@@ -73,7 +75,7 @@ pub struct BaselineTraceRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskLifecycleEvent {
+pub enum TaskTraceEvent {
     Spawn { parent_task_id: Option<u32>, child_task_id: u32 },
     Runnable { task_id: u32 },
     Choose { task_id: u32 },
@@ -84,9 +86,9 @@ pub enum TaskLifecycleEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskLifecycleRecord {
+pub struct TaskTraceRecord {
     pub event_id: u64,
-    pub event: TaskLifecycleEvent,
+    pub event: TaskTraceEvent,
 }
 
 const TRACE_CAPACITY: usize = 128;
@@ -123,12 +125,12 @@ impl TraceBuffer {
     }
 }
 
-struct LifecycleBuffer {
-    records: Vec<TaskLifecycleRecord>,
+struct TaskTraceBuffer {
+    records: Vec<TaskTraceRecord>,
     overflowed: bool,
 }
 
-impl LifecycleBuffer {
+impl TaskTraceBuffer {
     const fn new() -> Self {
         Self {
             records: Vec::new(),
@@ -145,7 +147,7 @@ impl LifecycleBuffer {
         self.overflowed = false;
     }
 
-    fn push(&mut self, record: TaskLifecycleRecord) {
+    fn push(&mut self, record: TaskTraceRecord) {
         if self.records.len() >= LIFECYCLE_TRACE_CAPACITY {
             self.overflowed = true;
             return;
@@ -157,7 +159,7 @@ impl LifecycleBuffer {
 
 static BASELINE_TRACE: [Mutex<TraceBuffer>; NUM_MAX_CPU] =
     array![_ => Mutex::new(TraceBuffer::new()); NUM_MAX_CPU];
-static TASK_LIFECYCLE_TRACE: Mutex<LifecycleBuffer> = Mutex::new(LifecycleBuffer::new());
+static TASK_TRACE: Mutex<TaskTraceBuffer> = Mutex::new(TaskTraceBuffer::new());
 static TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(
     not(feature = "std"),
@@ -181,8 +183,8 @@ pub fn reset() {
         trace.reset();
     }
     let mut node = MCSNode::new();
-    let mut lifecycle = TASK_LIFECYCLE_TRACE.lock(&mut node);
-    lifecycle.reset();
+    let mut task_trace = TASK_TRACE.lock(&mut node);
+    task_trace.reset();
 }
 
 #[inline(always)]
@@ -206,11 +208,11 @@ pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
 }
 
 #[inline(always)]
-pub fn record_lifecycle(event: TaskLifecycleEvent) {
+pub fn record_task_trace(event: TaskTraceEvent) {
     let event_id = next_event_id();
     let mut node = MCSNode::new();
-    let mut trace = TASK_LIFECYCLE_TRACE.lock(&mut node);
-    trace.push(TaskLifecycleRecord { event_id, event });
+    let mut trace = TASK_TRACE.lock(&mut node);
+    trace.push(TaskTraceRecord { event_id, event });
 }
 
 fn merge_records(mut records: Vec<BaselineTraceRecord>) -> Vec<BaselineTraceRecord> {
@@ -239,20 +241,20 @@ pub fn overflowed() -> bool {
         trace.overflowed
     });
     let mut node = MCSNode::new();
-    let lifecycle = TASK_LIFECYCLE_TRACE.lock(&mut node);
-    row_overflow || lifecycle.overflowed
+    let task_trace = TASK_TRACE.lock(&mut node);
+    row_overflow || task_trace.overflowed
 }
 
-fn merge_lifecycle_records(mut records: Vec<TaskLifecycleRecord>) -> Vec<TaskLifecycleRecord> {
+fn merge_task_trace_records(mut records: Vec<TaskTraceRecord>) -> Vec<TaskTraceRecord> {
     records.sort_by(|lhs, rhs| lhs.event_id.cmp(&rhs.event_id));
     records
 }
 
 #[inline(always)]
-pub fn lifecycle_records() -> Vec<TaskLifecycleRecord> {
+pub fn task_trace_records() -> Vec<TaskTraceRecord> {
     let mut node = MCSNode::new();
-    let trace = TASK_LIFECYCLE_TRACE.lock(&mut node);
-    merge_lifecycle_records(trace.records.clone())
+    let trace = TASK_TRACE.lock(&mut node);
+    merge_task_trace_records(trace.records.clone())
 }
 
 pub fn render_lines() -> Vec<String> {
@@ -312,7 +314,7 @@ fn render_rocq_list(values: &[u32]) -> String {
 
 fn render_rocq_row(record: BaselineTraceRecord) -> String {
     format!(
-        "mkAwkernelCapturedRow {} ({}) {} {} {} {}",
+        "mkAwkernelSchedTraceEntry {} ({}) {} {} {} {}",
         record.snapshot.cpu_id,
         render_rocq_event(record.event),
         render_rocq_option(record.snapshot.current),
@@ -385,26 +387,26 @@ pub fn render_trace_rows_artifact_lines() -> Vec<String> {
         .collect()
 }
 
-fn render_task_lifecycle_kind(event: TaskLifecycleEvent) -> (&'static str, u32, Option<u32>) {
+fn render_task_trace_kind(event: TaskTraceEvent) -> (&'static str, u32, Option<u32>) {
     match event {
-        TaskLifecycleEvent::Spawn {
+        TaskTraceEvent::Spawn {
             parent_task_id,
             child_task_id,
         } => ("Spawn", child_task_id, parent_task_id),
-        TaskLifecycleEvent::Runnable { task_id } => ("Runnable", task_id, None),
-        TaskLifecycleEvent::Choose { task_id } => ("Choose", task_id, None),
-        TaskLifecycleEvent::Dispatch { task_id } => ("Dispatch", task_id, None),
-        TaskLifecycleEvent::Sleep { task_id } => ("Sleep", task_id, None),
-        TaskLifecycleEvent::JoinWait {
+        TaskTraceEvent::Runnable { task_id } => ("Runnable", task_id, None),
+        TaskTraceEvent::Choose { task_id } => ("Choose", task_id, None),
+        TaskTraceEvent::Dispatch { task_id } => ("Dispatch", task_id, None),
+        TaskTraceEvent::Sleep { task_id } => ("Sleep", task_id, None),
+        TaskTraceEvent::JoinWait {
             waiter_task_id,
             child_task_id,
         } => ("JoinWait", waiter_task_id, Some(child_task_id)),
-        TaskLifecycleEvent::Complete { task_id } => ("Complete", task_id, None),
+        TaskTraceEvent::Complete { task_id } => ("Complete", task_id, None),
     }
 }
 
-fn render_task_lifecycle_record(record: TaskLifecycleRecord) -> String {
-    let (kind, subject, related) = render_task_lifecycle_kind(record.event);
+fn render_task_trace_record(record: TaskTraceRecord) -> String {
+    let (kind, subject, related) = render_task_trace_kind(record.event);
     format!(
         "{}\t{}\t{}",
         kind,
@@ -413,10 +415,10 @@ fn render_task_lifecycle_record(record: TaskLifecycleRecord) -> String {
     )
 }
 
-pub fn render_task_lifecycle_artifact_lines() -> Vec<String> {
-    lifecycle_records()
+pub fn render_task_trace_artifact_lines() -> Vec<String> {
+    task_trace_records()
         .into_iter()
-        .map(render_task_lifecycle_record)
+        .map(render_task_trace_record)
         .collect()
 }
 
@@ -428,7 +430,7 @@ pub fn render_rocq_handoff_artifact_lines() -> Vec<String> {
         "From RocqSched Require Import Operational.Awkernel.Minimal.CapturedTraceSyntax.".to_string(),
         "Import ListNotations.".to_string(),
         "".to_string(),
-        "Definition awk_generated_handoff_rows : list AwkernelCapturedRow :=".to_string(),
+        "Definition awk_generated_handoff_rows : list AwkernelSchedTraceEntry :=".to_string(),
     ];
 
     if records.is_empty() {
@@ -495,24 +497,36 @@ pub fn dump_to_console() {
         console::print(&format!("{SERIAL_PREFIX} {line}\r\n"));
     }
     console::print(&format!("{SERIAL_DONE_MARKER}\r\n"));
-    #[cfg(any(
-        feature = "handoff_trace_vm",
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    ))]
+    #[cfg(feature = "handoff_trace_vm")]
     {
         console::print(&format!("{TRACE_ROWS_BEGIN_MARKER}\r\n"));
         for line in render_trace_rows_artifact_lines() {
             console::print(&format!("{line}\r\n"));
         }
         console::print(&format!("{TRACE_ROWS_END_MARKER}\r\n"));
-        console::print(&format!("{TASK_LIFECYCLE_BEGIN_MARKER}\r\n"));
-        for line in render_task_lifecycle_artifact_lines() {
+        console::print(&format!("{ROCQ_BEGIN_MARKER}\r\n"));
+        for line in render_rocq_handoff_artifact_lines() {
             console::print(&format!("{line}\r\n"));
         }
-        console::print(&format!("{TASK_LIFECYCLE_END_MARKER}\r\n"));
+        console::print(&format!("{ROCQ_END_MARKER}\r\n"));
+    }
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
+    {
+        console::print(&format!("{SCHED_TRACE_BEGIN_MARKER}\r\n"));
+        for line in render_trace_rows_artifact_lines() {
+            console::print(&format!("{line}\r\n"));
+        }
+        console::print(&format!("{SCHED_TRACE_END_MARKER}\r\n"));
+        console::print(&format!("{TASK_TRACE_BEGIN_MARKER}\r\n"));
+        for line in render_task_trace_artifact_lines() {
+            console::print(&format!("{line}\r\n"));
+        }
+        console::print(&format!("{TASK_TRACE_END_MARKER}\r\n"));
         console::print(&format!("{ROCQ_BEGIN_MARKER}\r\n"));
         for line in render_rocq_handoff_artifact_lines() {
             console::print(&format!("{line}\r\n"));
@@ -631,12 +645,12 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("mkAwkernelCapturedRow 0 (EvWakeup 1) None [1] false None"))
+                .any(|line| line.contains("mkAwkernelSchedTraceEntry 0 (EvWakeup 1) None [1] false None"))
         );
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("mkAwkernelCapturedRow 1 (EvRequestResched 1) None [1] true None"))
+                .any(|line| line.contains("mkAwkernelSchedTraceEntry 1 (EvRequestResched 1) None [1] true None"))
         );
     }
 

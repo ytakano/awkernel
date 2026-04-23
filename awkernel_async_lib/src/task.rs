@@ -37,7 +37,7 @@ use futures::{
 
 #[cfg(feature = "baseline_trace")]
 use crate::baseline_trace::{
-    self, BaselineTraceEvent, BaselineTraceSnapshot, TaskLifecycleEvent,
+    self, BaselineTraceEvent, BaselineTraceSnapshot, TaskTraceEvent,
 };
 
 #[cfg(not(feature = "std"))]
@@ -169,8 +169,8 @@ fn record_baseline_complete(cpu_id: usize, task_id: u32) {
         feature = "sleep_wakeup_trace_vm"
     )
 ))]
-fn record_workload_lifecycle(event: TaskLifecycleEvent) {
-    baseline_trace::record_lifecycle(event);
+fn record_workload_task_trace(event: TaskTraceEvent) {
+    baseline_trace::record_task_trace(event);
 }
 
 #[cfg(not(all(
@@ -182,7 +182,7 @@ fn record_workload_lifecycle(event: TaskLifecycleEvent) {
         feature = "sleep_wakeup_trace_vm"
     )
 )))]
-fn record_workload_lifecycle(_event: TaskLifecycleEvent) {}
+fn record_workload_task_trace(_event: TaskTraceEvent) {}
 
 #[cfg(feature = "baseline_trace")]
 fn record_baseline_stutter(cpu_id: usize) {
@@ -289,7 +289,7 @@ impl ArcWake for Task {
         ))]
         {
             record_baseline_wakeup(trace_task_id);
-            record_workload_lifecycle(TaskLifecycleEvent::Runnable {
+            record_workload_task_trace(TaskTraceEvent::Runnable {
                 task_id: trace_task_id,
             });
         }
@@ -584,7 +584,7 @@ pub fn inner_spawn(
     let task = tasks.id_to_task.get(&id).cloned();
     drop(tasks);
 
-    record_workload_lifecycle(TaskLifecycleEvent::Spawn {
+    record_workload_task_trace(TaskTraceEvent::Spawn {
         parent_task_id,
         child_task_id: id,
     });
@@ -935,8 +935,8 @@ pub fn run_main() {
                 record_baseline_dispatch(cpu_id, task.id);
             }
 
-            record_workload_lifecycle(TaskLifecycleEvent::Choose { task_id: task.id });
-            record_workload_lifecycle(TaskLifecycleEvent::Dispatch { task_id: task.id });
+            record_workload_task_trace(TaskTraceEvent::Choose { task_id: task.id });
+            record_workload_task_trace(TaskTraceEvent::Dispatch { task_id: task.id });
 
             #[cfg(not(feature = "no_preempt"))]
             {
@@ -1068,7 +1068,7 @@ pub fn run_main() {
                     #[cfg(feature = "baseline_trace")]
                     record_baseline_complete(cpu_id, task.id);
 
-                    record_workload_lifecycle(TaskLifecycleEvent::Complete { task_id: task.id });
+                    record_workload_task_trace(TaskTraceEvent::Complete { task_id: task.id });
 
                     #[cfg(all(
                         feature = "baseline_trace",

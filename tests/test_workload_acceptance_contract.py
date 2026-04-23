@@ -15,8 +15,8 @@ EXPECTED_KEYS = {
     "scenario",
     "kind",
     "message",
-    "row_index",
-    "lifecycle_index",
+    "sched_trace_index",
+    "task_trace_index",
     "log_line_begin",
     "log_line_end",
 }
@@ -68,12 +68,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         tmpdir = tempfile.TemporaryDirectory(prefix="workload-accept-runner-")
         self.addCleanup(tmpdir.cleanup)
         runner_path = pathlib.Path(tmpdir.name) / "fake_runner.py"
-        runner_path.write_text(
-            "import sys\n"
-            + body
-            + "\n",
-            encoding="utf-8",
-        )
+        runner_path.write_text("import sys\n" + body + "\n", encoding="utf-8")
         return runner_path
 
     def run_wrapper(
@@ -127,76 +122,76 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
     def assert_single_json_stdout(self, stdout: str) -> None:
         self.assertEqual(len([line for line in stdout.splitlines() if line.strip()]), 1)
 
-    def test_missing_rows_block_reports_wrapper_failure(self) -> None:
+    def test_missing_sched_trace_block_reports_wrapper_failure(self) -> None:
         code, payload, stdout, stderr = self.run_wrapper(
             log_text="\n".join(
                 [
                     "boot",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             )
         )
         self.assertEqual(code, WRAPPER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="missing-rows-block")
-        self.assertIsNone(payload["row_index"])
-        self.assertIsNone(payload["lifecycle_index"])
+        self.assert_common_failure(payload, kind="missing-sched-trace-block")
+        self.assertIsNone(payload["sched_trace_index"])
+        self.assertIsNone(payload["task_trace_index"])
         self.assertIsNone(payload["log_line_begin"])
         self.assertIsNone(payload["log_line_end"])
         self.assertIn("rejected", stderr)
 
-    def test_empty_rows_block_reports_line_span(self) -> None:
+    def test_empty_sched_trace_block_reports_line_span(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
                     "boot",
-                    "BEGIN_TRACE_ROWS",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "BEGIN_SCHED_TRACE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             )
         )
         self.assertEqual(code, WRAPPER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="empty-rows-block")
+        self.assert_common_failure(payload, kind="empty-sched-trace-block")
         self.assertEqual(payload["log_line_begin"], 2)
         self.assertEqual(payload["log_line_end"], 3)
 
-    def test_missing_lifecycle_block_reports_wrapper_failure(self) -> None:
+    def test_missing_task_trace_block_reports_wrapper_failure(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
+                    "END_SCHED_TRACE",
                 ]
             )
         )
         self.assertEqual(code, WRAPPER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="missing-lifecycle-block")
+        self.assert_common_failure(payload, kind="missing-task-trace-block")
         self.assertIsNone(payload["log_line_begin"])
         self.assertIsNone(payload["log_line_end"])
 
-    def test_empty_lifecycle_block_reports_line_span(self) -> None:
+    def test_empty_task_trace_block_reports_line_span(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
-                    "END_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "END_TASK_TRACE",
                 ]
             )
         )
         self.assertEqual(code, WRAPPER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="empty-lifecycle-block")
+        self.assert_common_failure(payload, kind="empty-task-trace-block")
         self.assertEqual(payload["log_line_begin"], 4)
         self.assertEqual(payload["log_line_end"], 5)
 
@@ -227,43 +222,43 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         self.assert_single_json_stdout(stdout)
         self.assert_common_failure(payload, kind="checker-module-not-found")
 
-    def test_duplicate_rows_markers_report_wrapper_failure(self) -> None:
+    def test_duplicate_sched_trace_markers_report_wrapper_failure(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TRACE_ROWS",
+                    "END_SCHED_TRACE",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             )
         )
         self.assertEqual(code, WRAPPER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="missing-rows-block")
+        self.assert_common_failure(payload, kind="missing-sched-trace-block")
         self.assertEqual(payload["log_line_begin"], 1)
         self.assertEqual(payload["log_line_end"], 4)
 
-    def test_out_of_order_rows_markers_report_wrapper_failure(self) -> None:
+    def test_out_of_order_sched_trace_markers_report_wrapper_failure(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "END_TRACE_ROWS",
-                    "BEGIN_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             )
         )
         self.assertEqual(code, WRAPPER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="missing-rows-block")
+        self.assert_common_failure(payload, kind="missing-sched-trace-block")
         self.assertEqual(payload["log_line_begin"], 2)
         self.assertEqual(payload["log_line_end"], 1)
 
@@ -271,18 +266,18 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         fake_runner = self.make_runner_script(
             "print('debug banner')\n"
             "print('{\"accepted\": true, \"backend\": \"test-backend\", \"scenario\": \"test-scenario\", "
-            "\\\"kind\\\": \\\"accepted\\\", \\\"message\\\": \\\"ok\\\", \\\"row_index\\\": null, "
-            "\\\"lifecycle_index\\\": null, \\\"log_line_begin\\\": null, \\\"log_line_end\\\": null}')\n"
+            "\\\"kind\\\": \\\"accepted\\\", \\\"message\\\": \\\"ok\\\", \\\"sched_trace_index\\\": null, "
+            "\\\"task_trace_index\\\": null, \\\"log_line_begin\\\": null, \\\"log_line_end\\\": null}')\n"
         )
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=sys.executable,
@@ -296,22 +291,22 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
     def test_runner_multiple_json_lines_are_rejected(self) -> None:
         fake_runner = self.make_runner_script(
             "print('{\"accepted\": false, \"backend\": \"test-backend\", \"scenario\": \"test-scenario\", "
-            "\\\"kind\\\": \\\"workload-family-rejection\\\", \\\"message\\\": \\\"bad\\\", \\\"row_index\\\": null, "
-            "\\\"lifecycle_index\\\": null, \\\"log_line_begin\\\": null, \\\"log_line_end\\\": null}')\n"
+            "\\\"kind\\\": \\\"workload-family-rejection\\\", \\\"message\\\": \\\"bad\\\", \\\"sched_trace_index\\\": null, "
+            "\\\"task_trace_index\\\": null, \\\"log_line_begin\\\": null, \\\"log_line_end\\\": null}')\n"
             "print('{\"accepted\": false, \"backend\": \"test-backend\", \"scenario\": \"test-scenario\", "
-            "\\\"kind\\\": \\\"workload-family-rejection\\\", \\\"message\\\": \\\"bad\\\", \\\"row_index\\\": null, "
-            "\\\"lifecycle_index\\\": null, \\\"log_line_begin\\\": null, \\\"log_line_end\\\": null}')\n"
+            "\\\"kind\\\": \\\"workload-family-rejection\\\", \\\"message\\\": \\\"bad\\\", \\\"sched_trace_index\\\": null, "
+            "\\\"task_trace_index\\\": null, \\\"log_line_begin\\\": null, \\\"log_line_end\\\": null}')\n"
             "sys.exit(1)\n"
         )
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=sys.executable,
@@ -327,12 +322,12 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=sys.executable,
@@ -347,16 +342,16 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
         "runhaskell not available",
     )
-    def test_rows_parse_failure_reports_row_index(self) -> None:
+    def test_sched_trace_parse_failure_reports_sched_trace_index(self) -> None:
         code, payload, stdout, stderr = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "not-a-valid-row",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=self.runhaskell,
@@ -365,9 +360,9 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         )
         self.assertEqual(code, RUNNER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="rows-parse-failure")
-        self.assertEqual(payload["row_index"], 0)
-        self.assertIsNone(payload["lifecycle_index"])
+        self.assert_common_failure(payload, kind="sched-trace-parse-failure")
+        self.assertEqual(payload["sched_trace_index"], 0)
+        self.assertIsNone(payload["task_trace_index"])
         self.assertEqual(payload["log_line_begin"], 2)
         self.assertEqual(payload["log_line_end"], 2)
         self.assertIn("rejected", stderr)
@@ -376,16 +371,16 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
         "runhaskell not available",
     )
-    def test_lifecycle_parse_failure_reports_lifecycle_index(self) -> None:
+    def test_task_trace_parse_failure_reports_task_trace_index(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Broken\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=self.runhaskell,
@@ -394,9 +389,9 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         )
         self.assertEqual(code, RUNNER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="lifecycle-parse-failure")
-        self.assertIsNone(payload["row_index"])
-        self.assertEqual(payload["lifecycle_index"], 0)
+        self.assert_common_failure(payload, kind="task-trace-parse-failure")
+        self.assertIsNone(payload["sched_trace_index"])
+        self.assertEqual(payload["task_trace_index"], 0)
         self.assertEqual(payload["log_line_begin"], 5)
         self.assertEqual(payload["log_line_end"], 5)
 
@@ -404,16 +399,16 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
         "runhaskell not available",
     )
-    def test_unsupported_event_tag_stays_a_rows_parse_failure(self) -> None:
+    def test_unsupported_event_tag_stays_a_sched_trace_parse_failure(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "1\tPreempt\t1\t2\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=self.runhaskell,
@@ -422,8 +417,8 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         )
         self.assertEqual(code, RUNNER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="rows-parse-failure")
-        self.assertEqual(payload["row_index"], 0)
+        self.assert_common_failure(payload, kind="sched-trace-parse-failure")
+        self.assertEqual(payload["sched_trace_index"], 0)
         self.assertEqual(payload["log_line_begin"], 2)
         self.assertEqual(payload["log_line_end"], 2)
 
@@ -431,16 +426,16 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
         "runhaskell not available",
     )
-    def test_unsupported_lifecycle_kind_stays_a_lifecycle_parse_failure(self) -> None:
+    def test_unsupported_task_trace_kind_stays_a_task_trace_parse_failure(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Wake\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=self.runhaskell,
@@ -449,8 +444,8 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         )
         self.assertEqual(code, RUNNER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
-        self.assert_common_failure(payload, kind="lifecycle-parse-failure")
-        self.assertEqual(payload["lifecycle_index"], 0)
+        self.assert_common_failure(payload, kind="task-trace-parse-failure")
+        self.assertEqual(payload["task_trace_index"], 0)
         self.assertEqual(payload["log_line_begin"], 5)
         self.assertEqual(payload["log_line_end"], 5)
 
@@ -462,17 +457,17 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
                     "1\tComplete\t1\t-\t-\t\ttrue\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
                     "Runnable\t1\t-",
                     "Choose\t1\t-",
                     "Dispatch\t1\t-",
                     "Complete\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=self.runhaskell,
@@ -482,8 +477,8 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         self.assertEqual(code, RUNNER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
         self.assert_common_failure(payload, kind="workload-family-rejection")
-        self.assertIsNone(payload["row_index"])
-        self.assertIsNone(payload["lifecycle_index"])
+        self.assertIsNone(payload["sched_trace_index"])
+        self.assertIsNone(payload["task_trace_index"])
         self.assertIsNone(payload["log_line_begin"])
         self.assertIsNone(payload["log_line_end"])
 
@@ -495,19 +490,19 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         code, payload, stdout, stderr = self.run_wrapper(
             log_text="\n".join(
                 [
-                    "BEGIN_TRACE_ROWS",
+                    "BEGIN_SCHED_TRACE",
                     "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
                     "1\tChoose\t1\t1\t-\t1\tfalse\t1",
                     "1\tDispatch\t1\t1\t1\t\tfalse\t-",
                     "1\tComplete\t1\t-\t-\t\ttrue\t-",
-                    "END_TRACE_ROWS",
-                    "BEGIN_TASK_LIFECYCLE",
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
                     "Runnable\t1\t-",
                     "Choose\t1\t-",
                     "Dispatch\t1\t-",
                     "Complete\t1\t-",
-                    "END_TASK_LIFECYCLE",
+                    "END_TASK_TRACE",
                 ]
             ),
             runhaskell=self.runhaskell,
@@ -521,8 +516,8 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         self.assertEqual(payload["kind"], "accepted")
         self.assertEqual(payload["backend"], "test-backend")
         self.assertEqual(payload["scenario"], "test-scenario")
-        self.assertIsNone(payload["row_index"])
-        self.assertIsNone(payload["lifecycle_index"])
+        self.assertIsNone(payload["sched_trace_index"])
+        self.assertIsNone(payload["task_trace_index"])
         self.assertIsNone(payload["log_line_begin"])
         self.assertIsNone(payload["log_line_end"])
         self.assertIn("accepted", stderr)

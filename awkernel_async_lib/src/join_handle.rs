@@ -25,7 +25,7 @@ impl<T> JoinHandle<T> {
             )
         ))]
         if let Some(waiter_task_id) = task::get_current_task(awkernel_lib::cpu::cpu_id()) {
-            baseline_trace::record_lifecycle(baseline_trace::TaskLifecycleEvent::JoinWait {
+            baseline_trace::record_task_trace(baseline_trace::TaskTraceEvent::JoinWait {
                 waiter_task_id,
                 child_task_id: self.child_task_id,
             });
