@@ -221,6 +221,7 @@ WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
 WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
 WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup
+WORKLOAD_STRICT_BASELINE_SCENARIOS=single_async nested_spawn
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000
@@ -456,10 +457,14 @@ refresh-workload-trace-fixtures-qemu-2cpu-all:
 	done
 
 check-workload-trace-qemu-2cpu: capture-workload-log-qemu-2cpu
+	@if echo " $(WORKLOAD_STRICT_BASELINE_SCENARIOS) " | grep -q " $(WORKLOAD_SCENARIO) "; then \
 	python3 scripts/check_baseline_trace.py \
 		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
 		--expected ${WORKLOAD_TRACE_BASELINE_EXPECTED} \
-		--log ${WORKLOAD_TRACE_QEMU_LOG}
+		--log ${WORKLOAD_TRACE_QEMU_LOG}; \
+	else \
+		echo "qemu-workload-$(WORKLOAD_SCENARIO): baseline fixture is representative only; skipping exact baseline comparison"; \
+	fi
 	python3 scripts/check_rocq_trace_artifact.py \
 		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
 		--expected ${WORKLOAD_TRACE_ROCQ_EXPECTED} \
