@@ -2,6 +2,8 @@
 
 use super::Cancel;
 use crate::scheduler;
+#[cfg(feature = "baseline_trace")]
+use crate::{baseline_trace, task};
 use alloc::sync::Arc;
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
 use core::{task::Poll, time::Duration};
@@ -43,6 +45,21 @@ impl Future for Sleep {
                 let waker = cx.waker().clone();
 
                 *guard = State::Wait;
+
+                #[cfg(all(
+                    feature = "baseline_trace",
+                    any(
+                        feature = "single_async_trace_vm",
+                        feature = "nested_spawn_trace_vm",
+                        feature = "multi_async_trace_vm",
+                        feature = "sleep_wakeup_trace_vm"
+                    )
+                ))]
+                if let Some(task_id) = task::get_current_task(awkernel_lib::cpu::cpu_id()) {
+                    baseline_trace::record_lifecycle(
+                        baseline_trace::TaskLifecycleEvent::Sleep { task_id },
+                    );
+                }
 
                 // Invoke `sleep_handler` after `self.dur` time.
                 scheduler::sleep_task(

@@ -158,6 +158,13 @@ build-handoff-trace-x86_64: FORCE
 build-baseline-trace-x86_64: FORCE
 	$(MAKE) x86_64 RELEASE=1 OPT='--release --features baseline_trace_vm'
 
+build-workload-trace-x86_64: FORCE
+	@if [ -z "$(WORKLOAD_TRACE_FEATURE)" ]; then \
+		echo "unsupported WORKLOAD_SCENARIO: $(WORKLOAD_SCENARIO)"; \
+		exit 1; \
+	fi
+	$(MAKE) x86_64 RELEASE=1 OPT='--release --features $(WORKLOAD_TRACE_FEATURE)'
+
 $(X86ASM): FORCE
 	$(MAKE) -C $@
 
@@ -198,6 +205,22 @@ HANDOFF_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_handoff.log
 HANDOFF_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_handoff.log
 HANDOFF_ACCEPT_RUNHASKELL ?= runhaskell
 HANDOFF_ACCEPT_RUNNER ?= scripts/haskell/HandoffAcceptanceMain.hs
+WORKLOAD_SCENARIO ?= single_async
+WORKLOAD_TRACE_FEATURE_single_async=single_async_trace_vm
+WORKLOAD_TRACE_FEATURE_nested_spawn=nested_spawn_trace_vm
+WORKLOAD_TRACE_FEATURE_multi_async=multi_async_trace_vm
+WORKLOAD_TRACE_FEATURE_sleep_wakeup=sleep_wakeup_trace_vm
+WORKLOAD_TRACE_FEATURE=$(WORKLOAD_TRACE_FEATURE_$(WORKLOAD_SCENARIO))
+WORKLOAD_TRACE_FIXTURE_DIR=fixtures/workload_trace/$(WORKLOAD_SCENARIO)
+WORKLOAD_TRACE_BASELINE_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/baseline.txt
+WORKLOAD_TRACE_ROWS_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/rows.tsv
+WORKLOAD_TRACE_LIFECYCLE_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/lifecycle.tsv
+WORKLOAD_TRACE_ROCQ_EXPECTED=$(WORKLOAD_TRACE_FIXTURE_DIR)/rocq.v
+WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
+WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
+WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
+WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
+WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000
@@ -380,6 +403,105 @@ check-handoff-accept-kvm-2cpu: capture-handoff-log-kvm-2cpu
 		--runner ${HANDOFF_ACCEPT_RUNNER}
 
 check-handoff-accept-2cpu: check-handoff-accept-qemu-2cpu check-handoff-accept-kvm-2cpu
+
+capture-workload-log-qemu-2cpu: build-workload-trace-x86_64
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
+	timeout 40s qemu-system-x86_64 \
+		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
+		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_qemu.fd \
+		-drive format=raw,file=x86_64_uefi.img \
+		-machine q35 \
+		-serial stdio -monitor none \
+		-m 2G -smp 2 -nographic | tee ${WORKLOAD_TRACE_QEMU_LOG}
+
+capture-workload-log-kvm-2cpu: build-workload-trace-x86_64
+	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_kvm.fd
+	timeout 40s qemu-system-x86_64 \
+		-enable-kvm -cpu host \
+		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
+		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_kvm.fd \
+		-drive format=raw,file=x86_64_uefi.img \
+		-machine q35 \
+		-serial stdio -monitor none \
+		-m 2G -smp 2 -nographic | tee ${WORKLOAD_TRACE_KVM_LOG}
+
+refresh-workload-trace-fixtures-qemu-2cpu: capture-workload-log-qemu-2cpu
+	mkdir -p ${WORKLOAD_TRACE_FIXTURE_DIR}
+	python3 scripts/extract_trace_artifact.py \
+		--mode baseline \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--output ${WORKLOAD_TRACE_BASELINE_EXPECTED}
+	python3 scripts/extract_trace_artifact.py \
+		--mode block \
+		--begin BEGIN_TRACE_ROWS \
+		--end END_TRACE_ROWS \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--output ${WORKLOAD_TRACE_ROWS_EXPECTED}
+	python3 scripts/extract_trace_artifact.py \
+		--mode block \
+		--begin BEGIN_TASK_LIFECYCLE \
+		--end END_TASK_LIFECYCLE \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--output ${WORKLOAD_TRACE_LIFECYCLE_EXPECTED}
+	python3 scripts/extract_trace_artifact.py \
+		--mode block \
+		--begin BEGIN_ROCQ_TRACE \
+		--end END_ROCQ_TRACE \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--output ${WORKLOAD_TRACE_ROCQ_EXPECTED}
+
+refresh-workload-trace-fixtures-qemu-2cpu-all:
+	@for scenario in $(WORKLOAD_SCENARIOS); do \
+		$(MAKE) refresh-workload-trace-fixtures-qemu-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
+	done
+
+check-workload-trace-qemu-2cpu: capture-workload-log-qemu-2cpu
+	python3 scripts/check_baseline_trace.py \
+		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
+		--expected ${WORKLOAD_TRACE_BASELINE_EXPECTED} \
+		--log ${WORKLOAD_TRACE_QEMU_LOG}
+	python3 scripts/check_rocq_trace_artifact.py \
+		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
+		--expected ${WORKLOAD_TRACE_ROCQ_EXPECTED} \
+		--log ${WORKLOAD_TRACE_QEMU_LOG}
+	python3 scripts/check_trace_rows_artifact.py \
+		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
+		--expected ${WORKLOAD_TRACE_ROWS_EXPECTED} \
+		--log ${WORKLOAD_TRACE_QEMU_LOG}
+	python3 scripts/check_trace_block_artifact.py \
+		--backend qemu-workload-$(WORKLOAD_SCENARIO) \
+		--expected ${WORKLOAD_TRACE_LIFECYCLE_EXPECTED} \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--begin BEGIN_TASK_LIFECYCLE \
+		--end END_TASK_LIFECYCLE \
+		--label task-lifecycle
+
+check-workload-trace-qemu-2cpu-all:
+	@for scenario in $(WORKLOAD_SCENARIOS); do \
+		$(MAKE) check-workload-trace-qemu-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
+	done
+
+check-workload-accept-qemu-2cpu: capture-workload-log-qemu-2cpu
+	python3 scripts/check_workload_acceptance.py \
+		--backend qemu-workload \
+		--scenario ${WORKLOAD_SCENARIO} \
+		--log ${WORKLOAD_TRACE_QEMU_LOG} \
+		--runhaskell ${WORKLOAD_ACCEPT_RUNHASKELL} \
+		--runner ${WORKLOAD_ACCEPT_RUNNER}
+
+check-workload-accept-kvm-2cpu: capture-workload-log-kvm-2cpu
+	python3 scripts/check_workload_acceptance.py \
+		--backend kvm-workload \
+		--scenario ${WORKLOAD_SCENARIO} \
+		--log ${WORKLOAD_TRACE_KVM_LOG} \
+		--runhaskell ${WORKLOAD_ACCEPT_RUNHASKELL} \
+		--runner ${WORKLOAD_ACCEPT_RUNNER}
+
+check-workload-accept-2cpu-all:
+	@for scenario in $(WORKLOAD_SCENARIOS); do \
+		$(MAKE) check-workload-accept-qemu-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
+		$(MAKE) check-workload-accept-kvm-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
+	done
 
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd

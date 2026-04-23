@@ -8,14 +8,30 @@ use array_macro::array;
 use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
 use core::sync::atomic::AtomicU64;
-#[cfg(all(not(feature = "std"), feature = "baseline_trace_vm"))]
+#[cfg(all(
+    not(feature = "std"),
+    any(
+        feature = "baseline_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )
+))]
 use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(all(not(feature = "std"), feature = "handoff_trace_vm"))]
 use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(all(
     not(feature = "std"),
-    any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")
+    any(
+        feature = "baseline_trace_vm",
+        feature = "handoff_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )
 ))]
 use awkernel_lib::console;
 
@@ -25,6 +41,8 @@ pub const ROCQ_BEGIN_MARKER: &str = "BEGIN_ROCQ_TRACE";
 pub const ROCQ_END_MARKER: &str = "END_ROCQ_TRACE";
 pub const TRACE_ROWS_BEGIN_MARKER: &str = "BEGIN_TRACE_ROWS";
 pub const TRACE_ROWS_END_MARKER: &str = "END_TRACE_ROWS";
+pub const TASK_LIFECYCLE_BEGIN_MARKER: &str = "BEGIN_TASK_LIFECYCLE";
+pub const TASK_LIFECYCLE_END_MARKER: &str = "END_TASK_LIFECYCLE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaselineTraceEvent {
@@ -54,7 +72,25 @@ pub struct BaselineTraceRecord {
     pub snapshot: BaselineTraceSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskLifecycleEvent {
+    Spawn { parent_task_id: Option<u32>, child_task_id: u32 },
+    Runnable { task_id: u32 },
+    Choose { task_id: u32 },
+    Dispatch { task_id: u32 },
+    Sleep { task_id: u32 },
+    JoinWait { waiter_task_id: u32, child_task_id: u32 },
+    Complete { task_id: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLifecycleRecord {
+    pub event_id: u64,
+    pub event: TaskLifecycleEvent,
+}
+
 const TRACE_CAPACITY: usize = 128;
+const LIFECYCLE_TRACE_CAPACITY: usize = 512;
 
 struct TraceBuffer {
     records: Vec<BaselineTraceRecord>,
@@ -87,12 +123,52 @@ impl TraceBuffer {
     }
 }
 
+struct LifecycleBuffer {
+    records: Vec<TaskLifecycleRecord>,
+    overflowed: bool,
+}
+
+impl LifecycleBuffer {
+    const fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            overflowed: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.records.clear();
+        if self.records.capacity() < LIFECYCLE_TRACE_CAPACITY {
+            self.records
+                .reserve(LIFECYCLE_TRACE_CAPACITY - self.records.capacity());
+        }
+        self.overflowed = false;
+    }
+
+    fn push(&mut self, record: TaskLifecycleRecord) {
+        if self.records.len() >= LIFECYCLE_TRACE_CAPACITY {
+            self.overflowed = true;
+            return;
+        }
+
+        self.records.push(record);
+    }
+}
+
 static BASELINE_TRACE: [Mutex<TraceBuffer>; NUM_MAX_CPU] =
     array![_ => Mutex::new(TraceBuffer::new()); NUM_MAX_CPU];
+static TASK_LIFECYCLE_TRACE: Mutex<LifecycleBuffer> = Mutex::new(LifecycleBuffer::new());
 static TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(
     not(feature = "std"),
-    any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")
+    any(
+        feature = "baseline_trace_vm",
+        feature = "handoff_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )
 ))]
 static DUMP_ON_COMPLETE_TASK_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -104,11 +180,19 @@ pub fn reset() {
         let mut trace = trace.lock(&mut node);
         trace.reset();
     }
+    let mut node = MCSNode::new();
+    let mut lifecycle = TASK_LIFECYCLE_TRACE.lock(&mut node);
+    lifecycle.reset();
+}
+
+#[inline(always)]
+fn next_event_id() -> u64 {
+    TRACE_EVENT_ID.fetch_add(1, core::sync::atomic::Ordering::AcqRel)
 }
 
 #[inline(always)]
 pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
-    let event_id = TRACE_EVENT_ID.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    let event_id = next_event_id();
     let tsc = cpu_counter();
     let cpu_id = snapshot.cpu_id;
     let mut node = MCSNode::new();
@@ -119,6 +203,14 @@ pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
         event,
         snapshot,
     });
+}
+
+#[inline(always)]
+pub fn record_lifecycle(event: TaskLifecycleEvent) {
+    let event_id = next_event_id();
+    let mut node = MCSNode::new();
+    let mut trace = TASK_LIFECYCLE_TRACE.lock(&mut node);
+    trace.push(TaskLifecycleRecord { event_id, event });
 }
 
 fn merge_records(mut records: Vec<BaselineTraceRecord>) -> Vec<BaselineTraceRecord> {
@@ -141,11 +233,26 @@ pub fn records() -> Vec<BaselineTraceRecord> {
 
 #[inline(always)]
 pub fn overflowed() -> bool {
-    BASELINE_TRACE.iter().any(|trace| {
+    let row_overflow = BASELINE_TRACE.iter().any(|trace| {
         let mut node = MCSNode::new();
         let trace = trace.lock(&mut node);
         trace.overflowed
-    })
+    });
+    let mut node = MCSNode::new();
+    let lifecycle = TASK_LIFECYCLE_TRACE.lock(&mut node);
+    row_overflow || lifecycle.overflowed
+}
+
+fn merge_lifecycle_records(mut records: Vec<TaskLifecycleRecord>) -> Vec<TaskLifecycleRecord> {
+    records.sort_by(|lhs, rhs| lhs.event_id.cmp(&rhs.event_id));
+    records
+}
+
+#[inline(always)]
+pub fn lifecycle_records() -> Vec<TaskLifecycleRecord> {
+    let mut node = MCSNode::new();
+    let trace = TASK_LIFECYCLE_TRACE.lock(&mut node);
+    merge_lifecycle_records(trace.records.clone())
 }
 
 pub fn render_lines() -> Vec<String> {
@@ -278,6 +385,41 @@ pub fn render_trace_rows_artifact_lines() -> Vec<String> {
         .collect()
 }
 
+fn render_task_lifecycle_kind(event: TaskLifecycleEvent) -> (&'static str, u32, Option<u32>) {
+    match event {
+        TaskLifecycleEvent::Spawn {
+            parent_task_id,
+            child_task_id,
+        } => ("Spawn", child_task_id, parent_task_id),
+        TaskLifecycleEvent::Runnable { task_id } => ("Runnable", task_id, None),
+        TaskLifecycleEvent::Choose { task_id } => ("Choose", task_id, None),
+        TaskLifecycleEvent::Dispatch { task_id } => ("Dispatch", task_id, None),
+        TaskLifecycleEvent::Sleep { task_id } => ("Sleep", task_id, None),
+        TaskLifecycleEvent::JoinWait {
+            waiter_task_id,
+            child_task_id,
+        } => ("JoinWait", waiter_task_id, Some(child_task_id)),
+        TaskLifecycleEvent::Complete { task_id } => ("Complete", task_id, None),
+    }
+}
+
+fn render_task_lifecycle_record(record: TaskLifecycleRecord) -> String {
+    let (kind, subject, related) = render_task_lifecycle_kind(record.event);
+    format!(
+        "{}\t{}\t{}",
+        kind,
+        subject,
+        render_trace_rows_option(related)
+    )
+}
+
+pub fn render_task_lifecycle_artifact_lines() -> Vec<String> {
+    lifecycle_records()
+        .into_iter()
+        .map(render_task_lifecycle_record)
+        .collect()
+}
+
 pub fn render_rocq_handoff_artifact_lines() -> Vec<String> {
     let records = records();
     let mut lines = vec![
@@ -304,7 +446,14 @@ pub fn render_rocq_handoff_artifact_lines() -> Vec<String> {
 
 #[cfg(all(
     not(feature = "std"),
-    any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")
+    any(
+        feature = "baseline_trace_vm",
+        feature = "handoff_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )
 ))]
 pub fn arm_dump_on_complete(task_id: u32) {
     DUMP_ON_COMPLETE_TASK_ID.store(task_id, Ordering::Release);
@@ -312,7 +461,14 @@ pub fn arm_dump_on_complete(task_id: u32) {
 
 #[cfg(all(
     not(feature = "std"),
-    any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")
+    any(
+        feature = "baseline_trace_vm",
+        feature = "handoff_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )
 ))]
 pub fn take_dump_on_complete(task_id: u32) -> bool {
     DUMP_ON_COMPLETE_TASK_ID
@@ -322,7 +478,14 @@ pub fn take_dump_on_complete(task_id: u32) -> bool {
 
 #[cfg(all(
     not(feature = "std"),
-    any(feature = "baseline_trace_vm", feature = "handoff_trace_vm")
+    any(
+        feature = "baseline_trace_vm",
+        feature = "handoff_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )
 ))]
 pub fn dump_to_console() {
     if overflowed() {
@@ -332,13 +495,24 @@ pub fn dump_to_console() {
         console::print(&format!("{SERIAL_PREFIX} {line}\r\n"));
     }
     console::print(&format!("{SERIAL_DONE_MARKER}\r\n"));
-    #[cfg(feature = "handoff_trace_vm")]
+    #[cfg(any(
+        feature = "handoff_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
     {
         console::print(&format!("{TRACE_ROWS_BEGIN_MARKER}\r\n"));
         for line in render_trace_rows_artifact_lines() {
             console::print(&format!("{line}\r\n"));
         }
         console::print(&format!("{TRACE_ROWS_END_MARKER}\r\n"));
+        console::print(&format!("{TASK_LIFECYCLE_BEGIN_MARKER}\r\n"));
+        for line in render_task_lifecycle_artifact_lines() {
+            console::print(&format!("{line}\r\n"));
+        }
+        console::print(&format!("{TASK_LIFECYCLE_END_MARKER}\r\n"));
         console::print(&format!("{ROCQ_BEGIN_MARKER}\r\n"));
         for line in render_rocq_handoff_artifact_lines() {
             console::print(&format!("{line}\r\n"));

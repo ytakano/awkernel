@@ -1,0 +1,16 @@
+0	Wakeup	1	-	-	1	false	-
+1	Choose	1	1	-	1	false	1
+1	Dispatch	1	1	1		false	-
+0	Wakeup	2	-	-	2	false	-
+1	Choose	1	2	-	2	false	2
+1	Dispatch	1	2	2	2	false	-
+0	Wakeup	2	-	-	2	false	-
+1	Choose	1	1	-	1,2	false	1
+1	Dispatch	1	1	1	2	false	-
+1	Choose	1	2	-	2	false	2
+1	Dispatch	1	2	2		false	-
+0	Wakeup	1	-	-	1	false	-
+1	Complete	2	-	-	1	true	-
+1	Choose	1	1	-	1	false	1
+1	Dispatch	1	1	1		false	-
+1	Complete	1	-	-		true	-

@@ -1,17 +1,36 @@
 //! `JoinHandle` receives a return value of spawned a task.
 
+#[cfg(feature = "baseline_trace")]
+use crate::{baseline_trace, task};
 use futures::channel::oneshot::{Canceled, Receiver};
 
 pub struct JoinHandle<T> {
+    child_task_id: u32,
     rx: Receiver<T>,
 }
 
 impl<T> JoinHandle<T> {
-    pub fn new(rx: Receiver<T>) -> Self {
-        Self { rx }
+    pub fn new(child_task_id: u32, rx: Receiver<T>) -> Self {
+        Self { child_task_id, rx }
     }
 
     pub async fn join(self) -> Result<T, Canceled> {
+        #[cfg(all(
+            feature = "baseline_trace",
+            any(
+                feature = "single_async_trace_vm",
+                feature = "nested_spawn_trace_vm",
+                feature = "multi_async_trace_vm",
+                feature = "sleep_wakeup_trace_vm"
+            )
+        ))]
+        if let Some(waiter_task_id) = task::get_current_task(awkernel_lib::cpu::cpu_id()) {
+            baseline_trace::record_lifecycle(baseline_trace::TaskLifecycleEvent::JoinWait {
+                waiter_task_id,
+                child_task_id: self.child_task_id,
+            });
+        }
+
         self.rx.await
     }
 }

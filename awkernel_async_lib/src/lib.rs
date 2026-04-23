@@ -213,7 +213,7 @@ where
 {
     let (tx, rx) = oneshot::channel();
 
-    crate::task::spawn(
+    let child_task_id = crate::task::spawn(
         name,
         async move {
             let result = future.await;
@@ -223,5 +223,5 @@ where
         sched_type,
     );
 
-    JoinHandle::new(rx)
+    JoinHandle::new(child_task_id, rx)
 }
