@@ -1,3 +1,7 @@
+#![no_std]
+
+extern crate alloc;
+
 #[cfg(any(
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
@@ -54,13 +58,13 @@ async fn yield_leaf() -> TaskResult {
 }
 
 #[cfg(feature = "single_async_trace_vm")]
-pub(crate) async fn run_single_async() -> TaskResult {
+pub async fn run_single_async() -> TaskResult {
     r#yield().await;
     Ok(())
 }
 
 #[cfg(feature = "nested_spawn_trace_vm")]
-pub(crate) async fn run_nested_spawn() -> TaskResult {
+pub async fn run_nested_spawn() -> TaskResult {
     let child = spawn(
         "[Awkernel] nested_spawn trace child".into(),
         async {
@@ -81,7 +85,7 @@ pub(crate) async fn run_nested_spawn() -> TaskResult {
 }
 
 #[cfg(feature = "multi_async_trace_vm")]
-pub(crate) async fn run_multi_async() -> TaskResult {
+pub async fn run_multi_async() -> TaskResult {
     let child_a = spawn(
         "[Awkernel] multi_async trace child A".into(),
         yield_leaf(),
@@ -107,7 +111,7 @@ pub(crate) async fn run_multi_async() -> TaskResult {
 }
 
 #[cfg(feature = "sleep_wakeup_trace_vm")]
-pub(crate) async fn run_sleep_wakeup() -> TaskResult {
+pub async fn run_sleep_wakeup() -> TaskResult {
     let child = spawn(
         "[Awkernel] sleep_wakeup trace child".into(),
         async {

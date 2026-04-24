@@ -18,6 +18,11 @@ path = "../applications/awkernel_services"
 path = "../applications/rd_gen_to_dags"
 optional = true
 
+[dependencies.trace_minimal]
+path = "../applications/trace/minimal"
+optional = true
+default-features = false
+
 [dependencies.test_pubsub]
 path = "../applications/tests/test_pubsub"
 optional = true
@@ -88,18 +93,26 @@ handoff_trace_vm = [
 single_async_trace_vm = [
     "awkernel_async_lib/baseline_trace",
     "awkernel_async_lib/single_async_trace_vm",
+    "dep:trace_minimal",
+    "trace_minimal/single_async_trace_vm",
 ]
 nested_spawn_trace_vm = [
     "awkernel_async_lib/baseline_trace",
     "awkernel_async_lib/nested_spawn_trace_vm",
+    "dep:trace_minimal",
+    "trace_minimal/nested_spawn_trace_vm",
 ]
 multi_async_trace_vm = [
     "awkernel_async_lib/baseline_trace",
     "awkernel_async_lib/multi_async_trace_vm",
+    "dep:trace_minimal",
+    "trace_minimal/multi_async_trace_vm",
 ]
 sleep_wakeup_trace_vm = [
     "awkernel_async_lib/baseline_trace",
     "awkernel_async_lib/sleep_wakeup_trace_vm",
+    "dep:trace_minimal",
+    "trace_minimal/sleep_wakeup_trace_vm",
 ]
 
 # Evaluation applications

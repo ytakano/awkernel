@@ -13,14 +13,6 @@ use alloc::borrow::Cow;
 ))]
 use awkernel_async_lib::{scheduler::SchedulerType, task};
 
-#[cfg(any(
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm"
-))]
-mod workload_trace;
-
 pub async fn main() -> Result<(), Cow<'static, str>> {
     #[cfg(any(
         feature = "baseline_trace_vm",
@@ -126,7 +118,7 @@ pub fn install_single_async_trace_vm() {
 
     let task_id = task::spawn(
         "[Awkernel] single_async trace root".into(),
-        async { workload_trace::run_single_async().await },
+        async { trace_minimal::run_single_async().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 
@@ -139,7 +131,7 @@ pub fn install_nested_spawn_trace_vm() {
 
     let task_id = task::spawn(
         "[Awkernel] nested_spawn trace root".into(),
-        async { workload_trace::run_nested_spawn().await },
+        async { trace_minimal::run_nested_spawn().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 
@@ -152,7 +144,7 @@ pub fn install_multi_async_trace_vm() {
 
     let task_id = task::spawn(
         "[Awkernel] multi_async trace root".into(),
-        async { workload_trace::run_multi_async().await },
+        async { trace_minimal::run_multi_async().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 
@@ -165,7 +157,7 @@ pub fn install_sleep_wakeup_trace_vm() {
 
     let task_id = task::spawn(
         "[Awkernel] sleep_wakeup trace root".into(),
-        async { workload_trace::run_sleep_wakeup().await },
+        async { trace_minimal::run_sleep_wakeup().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 

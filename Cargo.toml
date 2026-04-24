@@ -14,6 +14,7 @@ members = [
     "applications/awkernel_shell",
     "applications/awkernel_display",
     "applications/rd_gen_to_dags",
+    "applications/trace/minimal",
     "applications/tests/*",
     "smoltcp",
     "awkernel_futures_macro",
