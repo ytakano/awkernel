@@ -38,15 +38,7 @@ use futures::{
 #[cfg(feature = "baseline_trace")]
 use crate::baseline_trace::{self, BaselineTraceEvent, BaselineTraceSnapshot};
 
-#[cfg(all(
-    feature = "baseline_trace",
-    any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
+#[cfg(feature = "baseline_trace")]
 use crate::baseline_trace::TaskTraceEvent;
 
 #[cfg(not(feature = "std"))]
@@ -245,15 +237,7 @@ fn record_baseline_complete(cpu_id: usize, task_id: u32) {
     );
 }
 
-#[cfg(all(
-    feature = "baseline_trace",
-    any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
+#[cfg(feature = "baseline_trace")]
 fn record_workload_task_trace(event: TaskTraceEvent) {
     baseline_trace::record_task_trace(event);
 }
@@ -352,15 +336,7 @@ impl ArcWake for Task {
         #[cfg(feature = "baseline_trace")]
         let trace_task_id = self.id;
 
-        #[cfg(all(
-            feature = "baseline_trace",
-            any(
-                feature = "single_async_trace_vm",
-                feature = "nested_spawn_trace_vm",
-                feature = "multi_async_trace_vm",
-                feature = "sleep_wakeup_trace_vm"
-            )
-        ))]
+        #[cfg(feature = "baseline_trace")]
         {
             record_baseline_wakeup(trace_task_id);
             record_workload_task_trace(TaskTraceEvent::Runnable {
@@ -373,17 +349,6 @@ impl ArcWake for Task {
         } else {
             self.scheduler.wake_task(self);
         }
-
-        #[cfg(all(
-            feature = "baseline_trace",
-            not(any(
-                feature = "single_async_trace_vm",
-                feature = "nested_spawn_trace_vm",
-                feature = "multi_async_trace_vm",
-                feature = "sleep_wakeup_trace_vm"
-            ))
-        ))]
-        record_baseline_wakeup(trace_task_id);
 
         #[cfg(feature = "handoff_trace_vm")]
         {
@@ -650,15 +615,7 @@ pub fn inner_spawn(
     let future = future.boxed();
 
     let scheduler = get_scheduler(sched_type);
-    #[cfg(all(
-        feature = "baseline_trace",
-        any(
-            feature = "single_async_trace_vm",
-            feature = "nested_spawn_trace_vm",
-            feature = "multi_async_trace_vm",
-            feature = "sleep_wakeup_trace_vm"
-        )
-    ))]
+    #[cfg(feature = "baseline_trace")]
     let parent_task_id = get_current_task(awkernel_lib::cpu::cpu_id());
 
     let mut node = MCSNode::new();
@@ -667,15 +624,7 @@ pub fn inner_spawn(
     let task = tasks.id_to_task.get(&id).cloned();
     drop(tasks);
 
-    #[cfg(all(
-        feature = "baseline_trace",
-        any(
-            feature = "single_async_trace_vm",
-            feature = "nested_spawn_trace_vm",
-            feature = "multi_async_trace_vm",
-            feature = "sleep_wakeup_trace_vm"
-        )
-    ))]
+    #[cfg(feature = "baseline_trace")]
     {
         record_workload_task_trace(TaskTraceEvent::Spawn {
             parent_task_id,
@@ -1023,29 +972,7 @@ pub fn run_main() {
             #[cfg(feature = "baseline_trace")]
             let trace_need_resched = PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed);
 
-            #[cfg(feature = "baseline_trace")]
-            {
-                record_baseline_choose(cpu_id, task.id, trace_need_resched);
-                PREEMPTION_REQUEST[cpu_id].store(false, Ordering::Relaxed);
-                record_baseline_dispatch(cpu_id, task.id);
-            }
-
-            #[cfg(not(feature = "baseline_trace"))]
             PREEMPTION_REQUEST[cpu_id].store(false, Ordering::Relaxed);
-
-            #[cfg(all(
-                feature = "baseline_trace",
-                any(
-                    feature = "single_async_trace_vm",
-                    feature = "nested_spawn_trace_vm",
-                    feature = "multi_async_trace_vm",
-                    feature = "sleep_wakeup_trace_vm"
-                )
-            ))]
-            {
-                record_workload_task_trace(TaskTraceEvent::Choose { task_id: task.id });
-                record_workload_task_trace(TaskTraceEvent::Dispatch { task_id: task.id });
-            }
 
             #[cfg(not(feature = "no_preempt"))]
             {
@@ -1057,6 +984,15 @@ pub fn run_main() {
                 if let Some(ctx) = info.take_preempt_context() {
                     info.update_last_executed();
                     drop(info);
+
+                    #[cfg(feature = "baseline_trace")]
+                    {
+                        record_baseline_choose(cpu_id, task.id, trace_need_resched);
+                        record_baseline_dispatch(cpu_id, task.id);
+
+                        record_workload_task_trace(TaskTraceEvent::Choose { task_id: task.id });
+                        record_workload_task_trace(TaskTraceEvent::Dispatch { task_id: task.id });
+                    }
 
                     #[cfg(feature = "perf")]
                     perf::start_context_switch();
@@ -1100,6 +1036,15 @@ pub fn run_main() {
                     }
 
                     info.update_last_executed();
+                }
+
+                #[cfg(feature = "baseline_trace")]
+                {
+                    record_baseline_choose(cpu_id, task.id, trace_need_resched);
+                    record_baseline_dispatch(cpu_id, task.id);
+
+                    record_workload_task_trace(TaskTraceEvent::Choose { task_id: task.id });
+                    record_workload_task_trace(TaskTraceEvent::Dispatch { task_id: task.id });
                 }
 
                 // Use the primary memory allocator.
@@ -1177,29 +1122,13 @@ pub fn run_main() {
                     #[cfg(feature = "baseline_trace")]
                     record_baseline_complete(cpu_id, task.id);
 
-                    #[cfg(all(
-                        feature = "baseline_trace",
-                        any(
-                            feature = "single_async_trace_vm",
-                            feature = "nested_spawn_trace_vm",
-                            feature = "multi_async_trace_vm",
-                            feature = "sleep_wakeup_trace_vm"
-                        )
-                    ))]
+                    #[cfg(feature = "baseline_trace")]
                     {
                         record_workload_task_trace(TaskTraceEvent::Complete { task_id: task.id });
                     }
 
                     #[cfg(all(
                         feature = "baseline_trace",
-                        any(
-                            feature = "baseline_trace_vm",
-                            feature = "handoff_trace_vm",
-                            feature = "single_async_trace_vm",
-                            feature = "nested_spawn_trace_vm",
-                            feature = "multi_async_trace_vm",
-                            feature = "sleep_wakeup_trace_vm"
-                        ),
                         target_arch = "x86_64",
                         not(feature = "std")
                     ))]

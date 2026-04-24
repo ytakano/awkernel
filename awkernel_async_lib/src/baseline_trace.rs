@@ -8,31 +8,10 @@ use array_macro::array;
 use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
 use core::sync::atomic::AtomicU64;
-#[cfg(all(
-    not(feature = "std"),
-    any(
-        feature = "baseline_trace_vm",
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
-use core::sync::atomic::{AtomicU32, Ordering};
-#[cfg(all(not(feature = "std"), feature = "handoff_trace_vm"))]
+#[cfg(not(feature = "std"))]
 use core::sync::atomic::{AtomicU32, Ordering};
 
-#[cfg(all(
-    not(feature = "std"),
-    any(
-        feature = "baseline_trace_vm",
-        feature = "handoff_trace_vm",
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
+#[cfg(not(feature = "std"))]
 use awkernel_lib::console;
 
 pub const SERIAL_PREFIX: &str = "BASELINE_TRACE:";
@@ -150,6 +129,12 @@ impl TaskTraceBuffer {
         self.overflowed = false;
     }
 
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
     fn push(&mut self, record: TaskTraceRecord) {
         if self.records.len() >= LIFECYCLE_TRACE_CAPACITY {
             self.overflowed = true;
@@ -164,17 +149,7 @@ static BASELINE_TRACE: [Mutex<TraceBuffer>; NUM_MAX_CPU] =
     array![_ => Mutex::new(TraceBuffer::new()); NUM_MAX_CPU];
 static TASK_TRACE: Mutex<TaskTraceBuffer> = Mutex::new(TaskTraceBuffer::new());
 static TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(
-    not(feature = "std"),
-    any(
-        feature = "baseline_trace_vm",
-        feature = "handoff_trace_vm",
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
+#[cfg(not(feature = "std"))]
 static DUMP_ON_COMPLETE_TASK_ID: AtomicU32 = AtomicU32::new(0);
 
 #[inline(always)]
@@ -212,10 +187,26 @@ pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
 
 #[inline(always)]
 pub fn record_task_trace(event: TaskTraceEvent) {
-    let event_id = next_event_id();
-    let mut node = MCSNode::new();
-    let mut trace = TASK_TRACE.lock(&mut node);
-    trace.push(TaskTraceRecord { event_id, event });
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
+    {
+        let event_id = next_event_id();
+        let mut node = MCSNode::new();
+        let mut trace = TASK_TRACE.lock(&mut node);
+        trace.push(TaskTraceRecord { event_id, event });
+    }
+
+    #[cfg(not(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )))]
+    let _ = event;
 }
 
 fn merge_records(mut records: Vec<BaselineTraceRecord>) -> Vec<BaselineTraceRecord> {
@@ -501,49 +492,19 @@ pub fn render_rocq_handoff_artifact_lines() -> Vec<String> {
     lines
 }
 
-#[cfg(all(
-    not(feature = "std"),
-    any(
-        feature = "baseline_trace_vm",
-        feature = "handoff_trace_vm",
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
+#[cfg(not(feature = "std"))]
 pub fn arm_dump_on_complete(task_id: u32) {
     DUMP_ON_COMPLETE_TASK_ID.store(task_id, Ordering::Release);
 }
 
-#[cfg(all(
-    not(feature = "std"),
-    any(
-        feature = "baseline_trace_vm",
-        feature = "handoff_trace_vm",
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
+#[cfg(not(feature = "std"))]
 pub fn take_dump_on_complete(task_id: u32) -> bool {
     DUMP_ON_COMPLETE_TASK_ID
         .compare_exchange(task_id, 0, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
 }
 
-#[cfg(all(
-    not(feature = "std"),
-    any(
-        feature = "baseline_trace_vm",
-        feature = "handoff_trace_vm",
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
-    )
-))]
+#[cfg(not(feature = "std"))]
 pub fn dump_to_console() {
     if overflowed() {
         console::print("BASELINE_TRACE_OVERFLOW\r\n");

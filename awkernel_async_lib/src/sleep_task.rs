@@ -46,15 +46,7 @@ impl Future for Sleep {
 
                 *guard = State::Wait;
 
-                #[cfg(all(
-                    feature = "baseline_trace",
-                    any(
-                        feature = "single_async_trace_vm",
-                        feature = "nested_spawn_trace_vm",
-                        feature = "multi_async_trace_vm",
-                        feature = "sleep_wakeup_trace_vm"
-                    )
-                ))]
+                #[cfg(feature = "baseline_trace")]
                 if let Some(task_id) = task::get_current_task(awkernel_lib::cpu::cpu_id()) {
                     baseline_trace::record_task_trace(
                         baseline_trace::TaskTraceEvent::Sleep { task_id },
