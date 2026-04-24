@@ -213,6 +213,7 @@ WORKLOAD_TRACE_FEATURE_sleep_wakeup=sleep_wakeup_trace_vm
 WORKLOAD_TRACE_FEATURE=$(WORKLOAD_TRACE_FEATURE_$(WORKLOAD_SCENARIO))
 WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
+WORKLOAD_TRACE_TIMEOUT ?= 120s
 WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
 WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
 WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup
@@ -401,24 +402,28 @@ check-handoff-accept-2cpu: check-handoff-accept-qemu-2cpu check-handoff-accept-k
 
 capture-workload-log-qemu-2cpu: build-workload-trace-x86_64
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
-	timeout 40s qemu-system-x86_64 \
+	rm -f ${WORKLOAD_TRACE_QEMU_LOG}
+	timeout ${WORKLOAD_TRACE_TIMEOUT} qemu-system-x86_64 \
 		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
 		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_qemu.fd \
 		-drive format=raw,file=x86_64_uefi.img \
 		-machine q35 \
-		-serial stdio -monitor none \
-		-m 2G -smp 2 -nographic | tee ${WORKLOAD_TRACE_QEMU_LOG}
+		-chardev stdio,id=workload_serial,signal=off,logfile=${WORKLOAD_TRACE_QEMU_LOG},logappend=off \
+		-serial chardev:workload_serial -monitor none \
+		-m 2G -smp 2 -nographic
 
 capture-workload-log-kvm-2cpu: build-workload-trace-x86_64
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_kvm.fd
-	timeout 40s qemu-system-x86_64 \
+	rm -f ${WORKLOAD_TRACE_KVM_LOG}
+	timeout ${WORKLOAD_TRACE_TIMEOUT} qemu-system-x86_64 \
 		-enable-kvm -cpu host \
 		-drive if=pflash,format=raw,readonly=on,file=${OVMF_PATH}/code.fd \
 		-drive if=pflash,format=raw,file=${OVMF_PATH}/vars_kvm.fd \
 		-drive format=raw,file=x86_64_uefi.img \
 		-machine q35 \
-		-serial stdio -monitor none \
-		-m 2G -smp 2 -nographic | tee ${WORKLOAD_TRACE_KVM_LOG}
+		-chardev stdio,id=workload_serial,signal=off,logfile=${WORKLOAD_TRACE_KVM_LOG},logappend=off \
+		-serial chardev:workload_serial -monitor none \
+		-m 2G -smp 2 -nographic
 
 check-workload-accept-qemu-2cpu: capture-workload-log-qemu-2cpu
 	python3 scripts/check_workload_acceptance.py \
