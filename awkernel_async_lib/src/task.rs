@@ -75,6 +75,40 @@ fn trace_task_id_of_task(task: &Task) -> u32 {
 }
 
 #[cfg(feature = "baseline_trace")]
+pub(crate) fn record_current_task_logical_complete() {
+    let cpu_id = awkernel_lib::cpu::cpu_id();
+    let runtime_task_id = match get_current_task(cpu_id) {
+        Some(task_id) => task_id,
+        None => return,
+    };
+
+    let task = {
+        let mut node = MCSNode::new();
+        let tasks = TASKS.lock(&mut node);
+        tasks.id_to_task.get(&runtime_task_id).cloned()
+    };
+
+    let Some(task) = task else {
+        return;
+    };
+
+    let trace_task_id = {
+        let mut node = MCSNode::new();
+        let mut info = task.info.lock(&mut node);
+        if info.completion_trace_recorded {
+            return;
+        }
+        info.completion_trace_recorded = true;
+        info.trace_task_id
+    };
+
+    record_baseline_complete(cpu_id, trace_task_id);
+    record_workload_task_trace(TaskTraceEvent::Complete {
+        task_id: trace_task_id,
+    });
+}
+
+#[cfg(feature = "baseline_trace")]
 pub(crate) fn trace_task_id_of_runtime_task_id(runtime_task_id: u32) -> Option<u32> {
     let mut node = MCSNode::new();
     let tasks = TASKS.lock(&mut node);
@@ -416,6 +450,8 @@ pub struct TaskInfo {
     pub(crate) dag_info: Option<DagInfo>,
     #[cfg(feature = "baseline_trace")]
     trace_task_id: u32,
+    #[cfg(feature = "baseline_trace")]
+    completion_trace_recorded: bool,
 
     #[cfg(not(feature = "no_preempt"))]
     thread: Option<PtrWorkerThreadContext>,
@@ -549,6 +585,8 @@ impl Tasks {
                     dag_info,
                     #[cfg(feature = "baseline_trace")]
                     trace_task_id,
+                    #[cfg(feature = "baseline_trace")]
+                    completion_trace_recorded: false,
 
                     #[cfg(not(feature = "no_preempt"))]
                     thread: None,
@@ -1186,14 +1224,19 @@ pub fn run_main() {
 
                     info.state = State::Terminated;
                     #[cfg(feature = "baseline_trace")]
-                    let trace_task_id = info.trace_task_id;
+                    let completion_trace = {
+                        if info.completion_trace_recorded {
+                            None
+                        } else {
+                            info.completion_trace_recorded = true;
+                            Some(info.trace_task_id)
+                        }
+                    };
                     drop(info);
 
                     #[cfg(feature = "baseline_trace")]
-                    record_baseline_complete(cpu_id, trace_task_id);
-
-                    #[cfg(feature = "baseline_trace")]
-                    {
+                    if let Some(trace_task_id) = completion_trace {
+                        record_baseline_complete(cpu_id, trace_task_id);
                         record_workload_task_trace(TaskTraceEvent::Complete {
                             task_id: trace_task_id,
                         });
