@@ -73,6 +73,14 @@ pub struct TaskTraceRecord {
     pub event: TaskTraceEvent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedAndTaskDispatchTraceRecord {
+    sched_choose: BaselineTraceRecord,
+    sched_dispatch: BaselineTraceRecord,
+    task_choose: Option<TaskTraceRecord>,
+    task_dispatch: Option<TaskTraceRecord>,
+}
+
 const TRACE_CAPACITY: usize = 128;
 const LIFECYCLE_TRACE_CAPACITY: usize = 512;
 
@@ -171,11 +179,31 @@ fn next_event_id() -> u64 {
 }
 
 #[inline(always)]
+fn next_event_id_block(width: u64) -> u64 {
+    TRACE_EVENT_ID.fetch_add(width, core::sync::atomic::Ordering::AcqRel)
+}
+
+#[inline(always)]
 pub fn capture_record(
     event: BaselineTraceEvent,
     snapshot: BaselineTraceSnapshot,
 ) -> BaselineTraceRecord {
     let event_id = next_event_id();
+    let tsc = cpu_counter();
+    BaselineTraceRecord {
+        event_id,
+        tsc,
+        event,
+        snapshot,
+    }
+}
+
+#[inline(always)]
+fn capture_record_with_event_id(
+    event_id: u64,
+    event: BaselineTraceEvent,
+    snapshot: BaselineTraceSnapshot,
+) -> BaselineTraceRecord {
     let tsc = cpu_counter();
     BaselineTraceRecord {
         event_id,
@@ -197,6 +225,34 @@ pub fn emit_record(record: BaselineTraceRecord) {
 pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
     let record = capture_record(event, snapshot);
     emit_record(record);
+}
+
+#[inline(always)]
+fn capture_task_record_with_event_id(
+    event_id: u64,
+    event: TaskTraceEvent,
+) -> Option<TaskTraceRecord> {
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
+    {
+        Some(TaskTraceRecord { event_id, event })
+    }
+
+    #[cfg(not(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )))]
+    {
+        let _ = event_id;
+        let _ = event;
+        None
+    }
 }
 
 #[inline(always)]
@@ -224,6 +280,45 @@ pub fn capture_task_record(event: TaskTraceEvent) -> Option<TaskTraceRecord> {
         let _ = event;
         None
     }
+}
+
+#[inline(always)]
+pub(crate) fn capture_sched_and_task_dispatch(
+    task_id: u32,
+    choose_snapshot: BaselineTraceSnapshot,
+    dispatch_snapshot: BaselineTraceSnapshot,
+) -> SchedAndTaskDispatchTraceRecord {
+    let choose_event_id = next_event_id_block(2);
+    let dispatch_event_id = choose_event_id + 1;
+    let sched_choose = capture_record_with_event_id(
+        choose_event_id,
+        BaselineTraceEvent::Choose { task_id },
+        choose_snapshot,
+    );
+    let sched_dispatch = capture_record_with_event_id(
+        dispatch_event_id,
+        BaselineTraceEvent::Dispatch { task_id },
+        dispatch_snapshot,
+    );
+    let task_choose =
+        capture_task_record_with_event_id(choose_event_id, TaskTraceEvent::Choose { task_id });
+    let task_dispatch =
+        capture_task_record_with_event_id(dispatch_event_id, TaskTraceEvent::Dispatch { task_id });
+
+    SchedAndTaskDispatchTraceRecord {
+        sched_choose,
+        sched_dispatch,
+        task_choose,
+        task_dispatch,
+    }
+}
+
+#[inline(always)]
+pub(crate) fn emit_sched_and_task_dispatch(record: SchedAndTaskDispatchTraceRecord) {
+    emit_record(record.sched_choose);
+    emit_record(record.sched_dispatch);
+    emit_task_record(record.task_choose);
+    emit_task_record(record.task_dispatch);
 }
 
 #[inline(always)]
@@ -616,6 +711,25 @@ mod tests {
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    fn test_snapshot(
+        cpu_id: usize,
+        current: Option<u32>,
+        runnable: Vec<u32>,
+        need_resched: bool,
+        dispatch_target: Option<u32>,
+    ) -> BaselineTraceSnapshot {
+        BaselineTraceSnapshot {
+            cpu_id,
+            current,
+            runnable,
+            need_resched,
+            dispatch_target,
+            worker_current: vec![current],
+            worker_need_resched: vec![need_resched],
+            worker_dispatch_target: vec![dispatch_target],
+        }
+    }
+
     #[test]
     fn records_multiple_cpus_in_baseline_trace() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -766,6 +880,129 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "1\tChoose\t1\t1\t-\t1\ttrue\t1\t-\ttrue\t1");
         assert_eq!(lines[1], "1\tDispatch\t1\t1\t1\t\tfalse\t-\t1\tfalse\t-");
+    }
+
+    #[test]
+    fn dispatch_capture_reserves_contiguous_sched_event_ids() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+
+        let pending = capture_sched_and_task_dispatch(
+            7,
+            test_snapshot(0, None, vec![7], true, Some(7)),
+            test_snapshot(0, Some(7), vec![], false, None),
+        );
+
+        assert_eq!(
+            pending.sched_choose.event_id + 1,
+            pending.sched_dispatch.event_id
+        );
+        assert_eq!(
+            pending.sched_choose.event,
+            BaselineTraceEvent::Choose { task_id: 7 }
+        );
+        assert_eq!(
+            pending.sched_dispatch.event,
+            BaselineTraceEvent::Dispatch { task_id: 7 }
+        );
+        assert!(records().is_empty());
+
+        emit_sched_and_task_dispatch(pending);
+
+        let records = records();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].event_id, 0);
+        assert_eq!(records[1].event_id, 1);
+
+        #[cfg(not(any(
+            feature = "single_async_trace_vm",
+            feature = "nested_spawn_trace_vm",
+            feature = "multi_async_trace_vm",
+            feature = "sleep_wakeup_trace_vm"
+        )))]
+        assert!(task_trace_records().is_empty());
+    }
+
+    #[test]
+    fn delayed_dispatch_emit_keeps_sched_trace_order_by_reserved_event_id() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+
+        let pending = capture_sched_and_task_dispatch(
+            7,
+            test_snapshot(0, None, vec![7], true, Some(7)),
+            test_snapshot(0, Some(7), vec![], false, None),
+        );
+        record(
+            BaselineTraceEvent::Complete { task_id: 42 },
+            test_snapshot(1, None, vec![], true, None),
+        );
+        emit_sched_and_task_dispatch(pending);
+
+        let lines = render_trace_rows_artifact_lines();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "0\tChoose\t1\t7\t-\t7\ttrue\t7\t-\ttrue\t7");
+        assert_eq!(lines[1], "0\tDispatch\t1\t7\t7\t\tfalse\t-\t7\tfalse\t-");
+        assert_eq!(lines[2], "1\tComplete\t42\t-\t-\t\ttrue\t-\t-\ttrue\t-");
+    }
+
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
+    #[test]
+    fn dispatch_capture_pairs_sched_and_task_event_ids() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+
+        let pending = capture_sched_and_task_dispatch(
+            7,
+            test_snapshot(0, None, vec![7], true, Some(7)),
+            test_snapshot(0, Some(7), vec![], false, None),
+        );
+        let task_choose = pending
+            .task_choose
+            .as_ref()
+            .expect("task Choose trace must be present");
+        let task_dispatch = pending
+            .task_dispatch
+            .as_ref()
+            .expect("task Dispatch trace must be present");
+
+        assert_eq!(pending.sched_choose.event_id, task_choose.event_id);
+        assert_eq!(pending.sched_dispatch.event_id, task_dispatch.event_id);
+        assert_eq!(
+            pending.sched_choose.event_id + 1,
+            pending.sched_dispatch.event_id
+        );
+    }
+
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
+    #[test]
+    fn delayed_dispatch_emit_keeps_task_trace_order_by_reserved_event_id() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+
+        let pending = capture_sched_and_task_dispatch(
+            7,
+            test_snapshot(0, None, vec![7], true, Some(7)),
+            test_snapshot(0, Some(7), vec![], false, None),
+        );
+        record_task_trace(TaskTraceEvent::Runnable { task_id: 42 });
+        emit_sched_and_task_dispatch(pending);
+
+        let lines = render_task_trace_artifact_lines();
+        assert_eq!(
+            lines,
+            vec!["Choose\t7\t-", "Dispatch\t7\t-", "Runnable\t42\t-"]
+        );
     }
 
     #[test]

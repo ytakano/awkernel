@@ -37,7 +37,7 @@ use futures::{
 
 #[cfg(feature = "baseline_trace")]
 use crate::baseline_trace::{
-    self, BaselineTraceEvent, BaselineTraceRecord, BaselineTraceSnapshot, TaskTraceRecord,
+    self, BaselineTraceEvent, BaselineTraceSnapshot, SchedAndTaskDispatchTraceRecord,
 };
 
 #[cfg(feature = "baseline_trace")]
@@ -217,10 +217,7 @@ fn record_baseline_handle_resched(cpu_id: usize) {
 
 #[cfg(feature = "baseline_trace")]
 pub(crate) struct BaselineDispatchProjection {
-    choose: BaselineTraceRecord,
-    dispatch: BaselineTraceRecord,
-    task_choose: Option<TaskTraceRecord>,
-    task_dispatch: Option<TaskTraceRecord>,
+    dispatch: SchedAndTaskDispatchTraceRecord,
 }
 
 #[cfg(feature = "baseline_trace")]
@@ -229,31 +226,18 @@ pub(crate) fn capture_baseline_dispatch_projection(
     task_id: u32,
 ) -> BaselineDispatchProjection {
     let need_resched = PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed);
-    let choose = baseline_trace::capture_record(
-        BaselineTraceEvent::Choose { task_id },
+    let dispatch = baseline_trace::capture_sched_and_task_dispatch(
+        task_id,
         baseline_choose_snapshot(cpu_id, task_id, need_resched),
-    );
-    let dispatch = baseline_trace::capture_record(
-        BaselineTraceEvent::Dispatch { task_id },
         baseline_snapshot(cpu_id, Some(task_id), None, false, None),
     );
-    let task_choose = baseline_trace::capture_task_record(TaskTraceEvent::Choose { task_id });
-    let task_dispatch = baseline_trace::capture_task_record(TaskTraceEvent::Dispatch { task_id });
 
-    BaselineDispatchProjection {
-        choose,
-        dispatch,
-        task_choose,
-        task_dispatch,
-    }
+    BaselineDispatchProjection { dispatch }
 }
 
 #[cfg(feature = "baseline_trace")]
 fn emit_baseline_dispatch_projection(projection: BaselineDispatchProjection) {
-    baseline_trace::emit_record(projection.choose);
-    baseline_trace::emit_record(projection.dispatch);
-    baseline_trace::emit_task_record(projection.task_choose);
-    baseline_trace::emit_task_record(projection.task_dispatch);
+    baseline_trace::emit_sched_and_task_dispatch(projection.dispatch);
 }
 
 #[cfg(feature = "baseline_trace")]
