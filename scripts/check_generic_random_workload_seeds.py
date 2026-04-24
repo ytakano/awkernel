@@ -8,12 +8,19 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 
 MASK64 = (1 << 64) - 1
 DEFAULT_START_SEED = 0x4D59_5DF4_D0F3_3173
 TRACE_DONE_MARKER = "END_ROCQ_TRACE"
+
+
+@dataclass(frozen=True)
+class RunResult:
+    code: int
+    log_path: Path | None = None
 
 
 def splitmix64(value: int) -> int:
@@ -211,13 +218,29 @@ def check_log(args: argparse.Namespace, log_path: Path) -> int:
     return subprocess.run(command, cwd=repo_root()).returncode
 
 
-def run_one(args: argparse.Namespace, seed: int, index: int) -> int:
+def print_trace_log(log_path: Path | None) -> None:
+    if log_path is None:
+        return
+
+    print(f"generic_random trace log: {log_path}", file=sys.stderr)
+    if not log_path.exists():
+        print(f"trace log not found: {log_path}", file=sys.stderr)
+        return
+
+    print("----- BEGIN GENERIC_RANDOM TRACE LOG -----", file=sys.stderr)
+    with log_path.open("r", encoding="utf-8", errors="replace") as log_file:
+        for line in log_file:
+            print(line, end="", file=sys.stderr)
+    print("----- END GENERIC_RANDOM TRACE LOG -----", file=sys.stderr)
+
+
+def run_one(args: argparse.Namespace, seed: int, index: int) -> RunResult:
     seed_arg = f"0x{seed:016x}"
     print(f"[{index + 1}/{args.max_runs}] GENERIC_TRACE_SEED={seed_arg}", flush=True)
 
     code = build_image(args, seed_arg)
     if code != 0:
-        return code
+        return RunResult(code)
 
     code, log_path = capture_qemu_log(args, seed_arg, index)
     if code != 0:
@@ -225,33 +248,34 @@ def run_one(args: argparse.Namespace, seed: int, index: int) -> int:
             f"QEMU run did not emit {TRACE_DONE_MARKER} within {args.timeout}s; log={log_path}",
             file=sys.stderr,
         )
-        return code
+        return RunResult(code, log_path)
 
-    return check_log(args, log_path)
+    return RunResult(check_log(args, log_path), log_path)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    failures: list[tuple[int, int, int]] = []
+    failures: list[tuple[int, int, RunResult]] = []
     seeds = args.seed[: args.max_runs]
 
     for index in range(len(seeds), args.max_runs):
         seeds.append(splitmix64(args.start_seed + index))
 
     for index, seed in enumerate(seeds):
-        code = run_one(args, seed, index)
-        if code != 0:
-            failures.append((index, seed, code))
+        result = run_one(args, seed, index)
+        if result.code != 0:
+            failures.append((index, seed, result))
             break
 
     if failures:
-        index, seed, code = failures[0]
+        index, seed, result = failures[0]
         print(
             f"generic_random seed run failed at index {index} "
-            f"with seed 0x{seed:016x}, exit code {code}",
+            f"with seed 0x{seed:016x}, exit code {result.code}",
             file=sys.stderr,
         )
-        return code
+        print_trace_log(result.log_path)
+        return result.code
 
     print(f"generic_random seed runs accepted: {args.max_runs}")
     return 0
