@@ -173,7 +173,7 @@ mkSuccess backend scenario =
   Diagnostic
     { accepted = True
     , kind = "accepted"
-    , message = "workload acceptance accepted the emitted task_trace/sched_trace pair"
+    , message = "workload acceptance accepted the emitted task_trace/sched_trace pair under the logical top-1 GlobalFIFO worker schedule"
     , schedTraceIndex = Nothing
     , taskTraceIndex = Nothing
     , logLineBegin = Nothing
@@ -247,12 +247,12 @@ main = do
                           | natToInt fifoIdx == natToInt relationIdx -> do
                               emitDiagnostic
                                 (mkFailure backend scenario "global-fifo-rejection"
-                                  "the emitted sched_trace violates the local GlobalFIFO choose-order check"
+                                  "the emitted sched_trace violates the local GlobalFIFO choose-order check for the logical top-1 worker schedule"
                                   (Just (natToInt fifoIdx)) Nothing)
                               exitFailure
                         _ -> do
                           emitDiagnostic
                             (mkFailure backend scenario "scheduler-relation-rejection"
-                              "the emitted sched_trace violates the extracted GlobalFIFO scheduler-relation check"
+                              "the emitted sched_trace violates the extracted GlobalFIFO scheduler-relation check for the logical top-1 worker schedule"
                               (Just (natToInt relationIdx)) Nothing)
                           exitFailure

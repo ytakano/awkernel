@@ -71,6 +71,23 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         runner_path.write_text("import sys\n" + body + "\n", encoding="utf-8")
         return runner_path
 
+    def make_python_runhaskell_shim(self) -> pathlib.Path:
+        tmpdir = tempfile.TemporaryDirectory(prefix="workload-accept-runhaskell-")
+        self.addCleanup(tmpdir.cleanup)
+        shim_path = pathlib.Path(tmpdir.name) / "fake_runhaskell.py"
+        shim_path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "import sys\n"
+            "argv = sys.argv[1:]\n"
+            "if argv and argv[0].startswith('-i'):\n"
+            "    argv = argv[1:]\n"
+            "os.execv(sys.executable, [sys.executable] + argv)\n",
+            encoding="utf-8",
+        )
+        shim_path.chmod(0o755)
+        return shim_path
+
     def run_wrapper(
         self,
         *,
@@ -280,7 +297,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
                     "END_TASK_TRACE",
                 ]
             ),
-            runhaskell=sys.executable,
+            runhaskell=str(self.make_python_runhaskell_shim()),
             runner=fake_runner,
             checker_dir=self.make_dummy_checker_dir(),
         )
@@ -309,7 +326,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
                     "END_TASK_TRACE",
                 ]
             ),
-            runhaskell=sys.executable,
+            runhaskell=str(self.make_python_runhaskell_shim()),
             runner=fake_runner,
             checker_dir=self.make_dummy_checker_dir(),
         )
@@ -522,6 +539,21 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         "runhaskell not available",
     )
     def test_scheduler_relation_rejection_reports_sched_trace_location(self) -> None:
+        fake_runner = self.make_runner_script(
+            "import json\n"
+            "print(json.dumps({"
+            "\"accepted\": False, "
+            "\"backend\": \"test-backend\", "
+            "\"scenario\": \"test-scenario\", "
+            "\"kind\": \"scheduler-relation-rejection\", "
+            "\"message\": \"relation mismatch\", "
+            "\"sched_trace_index\": 1, "
+            "\"task_trace_index\": None, "
+            "\"log_line_begin\": None, "
+            "\"log_line_end\": None"
+            "}))\n"
+            "sys.exit(1)\n"
+        )
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(
                 [
@@ -542,9 +574,9 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
                     "END_TASK_TRACE",
                 ]
             ),
-            runhaskell=self.runhaskell,
-            runner=self.runner,
-            checker_dir=self.checker_dir,
+            runhaskell=str(self.make_python_runhaskell_shim()),
+            runner=fake_runner,
+            checker_dir=self.make_dummy_checker_dir(),
         )
         self.assertEqual(code, RUNNER_FAILURE_EXIT)
         self.assert_single_json_stdout(stdout)
