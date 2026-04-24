@@ -36,7 +36,9 @@ use futures::{
 };
 
 #[cfg(feature = "baseline_trace")]
-use crate::baseline_trace::{self, BaselineTraceEvent, BaselineTraceSnapshot};
+use crate::baseline_trace::{
+    self, BaselineTraceEvent, BaselineTraceRecord, BaselineTraceSnapshot, TaskTraceRecord,
+};
 
 #[cfg(feature = "baseline_trace")]
 use crate::baseline_trace::TaskTraceEvent;
@@ -214,19 +216,44 @@ fn record_baseline_handle_resched(cpu_id: usize) {
 }
 
 #[cfg(feature = "baseline_trace")]
-fn record_baseline_choose(cpu_id: usize, task_id: u32, need_resched: bool) {
-    baseline_trace::record(
-        BaselineTraceEvent::Choose { task_id },
-        baseline_choose_snapshot(cpu_id, task_id, need_resched),
-    );
+pub(crate) struct BaselineDispatchProjection {
+    choose: BaselineTraceRecord,
+    dispatch: BaselineTraceRecord,
+    task_choose: Option<TaskTraceRecord>,
+    task_dispatch: Option<TaskTraceRecord>,
 }
 
 #[cfg(feature = "baseline_trace")]
-fn record_baseline_dispatch(cpu_id: usize, task_id: u32) {
-    baseline_trace::record(
+pub(crate) fn capture_baseline_dispatch_projection(
+    cpu_id: usize,
+    task_id: u32,
+) -> BaselineDispatchProjection {
+    let need_resched = PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed);
+    let choose = baseline_trace::capture_record(
+        BaselineTraceEvent::Choose { task_id },
+        baseline_choose_snapshot(cpu_id, task_id, need_resched),
+    );
+    let dispatch = baseline_trace::capture_record(
         BaselineTraceEvent::Dispatch { task_id },
         baseline_snapshot(cpu_id, Some(task_id), None, false, None),
     );
+    let task_choose = baseline_trace::capture_task_record(TaskTraceEvent::Choose { task_id });
+    let task_dispatch = baseline_trace::capture_task_record(TaskTraceEvent::Dispatch { task_id });
+
+    BaselineDispatchProjection {
+        choose,
+        dispatch,
+        task_choose,
+        task_dispatch,
+    }
+}
+
+#[cfg(feature = "baseline_trace")]
+fn emit_baseline_dispatch_projection(projection: BaselineDispatchProjection) {
+    baseline_trace::emit_record(projection.choose);
+    baseline_trace::emit_record(projection.dispatch);
+    baseline_trace::emit_task_record(projection.task_choose);
+    baseline_trace::emit_task_record(projection.task_dispatch);
 }
 
 #[cfg(feature = "baseline_trace")]
@@ -662,14 +689,28 @@ pub fn set_current_task(cpu_id: usize, task_id: u32) {
 }
 
 #[inline(always)]
-fn get_next_task(execution_ensured: bool) -> Option<Arc<Task>> {
+fn get_next_task(execution_ensured: bool) -> Option<scheduler::ScheduledTask> {
     #[cfg(not(feature = "no_preempt"))]
     {
         if let Some(next) = preempt::get_next_task() {
             if execution_ensured {
                 set_current_task(awkernel_lib::cpu::cpu_id(), next.id);
             }
-            return Some(next);
+
+            let scheduled = scheduler::ScheduledTask::new(next);
+
+            #[cfg(feature = "baseline_trace")]
+            {
+                if execution_ensured {
+                    let projection = capture_baseline_dispatch_projection(
+                        awkernel_lib::cpu::cpu_id(),
+                        scheduled.task.id,
+                    );
+                    return Some(scheduled.with_dispatch_projection(projection));
+                }
+            }
+
+            return Some(scheduled);
         }
     }
 
@@ -968,9 +1009,10 @@ pub fn run_main() {
             record_baseline_handle_resched(cpu_id);
         }
 
-        if let Some(task) = get_next_task(true) {
+        if let Some(scheduled_task) = get_next_task(true) {
             #[cfg(feature = "baseline_trace")]
-            let trace_need_resched = PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed);
+            let mut dispatch_projection = scheduled_task.dispatch_projection;
+            let task = scheduled_task.task;
 
             PREEMPTION_REQUEST[cpu_id].store(false, Ordering::Relaxed);
 
@@ -987,11 +1029,11 @@ pub fn run_main() {
 
                     #[cfg(feature = "baseline_trace")]
                     {
-                        record_baseline_choose(cpu_id, task.id, trace_need_resched);
-                        record_baseline_dispatch(cpu_id, task.id);
-
-                        record_workload_task_trace(TaskTraceEvent::Choose { task_id: task.id });
-                        record_workload_task_trace(TaskTraceEvent::Dispatch { task_id: task.id });
+                        emit_baseline_dispatch_projection(
+                            dispatch_projection
+                                .take()
+                                .expect("dispatch projection must be captured"),
+                        );
                     }
 
                     #[cfg(feature = "perf")]
@@ -1040,11 +1082,11 @@ pub fn run_main() {
 
                 #[cfg(feature = "baseline_trace")]
                 {
-                    record_baseline_choose(cpu_id, task.id, trace_need_resched);
-                    record_baseline_dispatch(cpu_id, task.id);
-
-                    record_workload_task_trace(TaskTraceEvent::Choose { task_id: task.id });
-                    record_workload_task_trace(TaskTraceEvent::Dispatch { task_id: task.id });
+                    emit_baseline_dispatch_projection(
+                        dispatch_projection
+                            .take()
+                            .expect("dispatch projection must be captured"),
+                    );
                 }
 
                 // Use the primary memory allocator.

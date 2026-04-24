@@ -171,22 +171,36 @@ fn next_event_id() -> u64 {
 }
 
 #[inline(always)]
-pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
+pub fn capture_record(
+    event: BaselineTraceEvent,
+    snapshot: BaselineTraceSnapshot,
+) -> BaselineTraceRecord {
     let event_id = next_event_id();
     let tsc = cpu_counter();
-    let cpu_id = snapshot.cpu_id;
-    let mut node = MCSNode::new();
-    let mut trace = BASELINE_TRACE[cpu_id].lock(&mut node);
-    trace.push(BaselineTraceRecord {
+    BaselineTraceRecord {
         event_id,
         tsc,
         event,
         snapshot,
-    });
+    }
 }
 
 #[inline(always)]
-pub fn record_task_trace(event: TaskTraceEvent) {
+pub fn emit_record(record: BaselineTraceRecord) {
+    let cpu_id = record.snapshot.cpu_id;
+    let mut node = MCSNode::new();
+    let mut trace = BASELINE_TRACE[cpu_id].lock(&mut node);
+    trace.push(record);
+}
+
+#[inline(always)]
+pub fn record(event: BaselineTraceEvent, snapshot: BaselineTraceSnapshot) {
+    let record = capture_record(event, snapshot);
+    emit_record(record);
+}
+
+#[inline(always)]
+pub fn capture_task_record(event: TaskTraceEvent) -> Option<TaskTraceRecord> {
     #[cfg(any(
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
@@ -194,10 +208,10 @@ pub fn record_task_trace(event: TaskTraceEvent) {
         feature = "sleep_wakeup_trace_vm"
     ))]
     {
-        let event_id = next_event_id();
-        let mut node = MCSNode::new();
-        let mut trace = TASK_TRACE.lock(&mut node);
-        trace.push(TaskTraceRecord { event_id, event });
+        Some(TaskTraceRecord {
+            event_id: next_event_id(),
+            event,
+        })
     }
 
     #[cfg(not(any(
@@ -206,7 +220,39 @@ pub fn record_task_trace(event: TaskTraceEvent) {
         feature = "multi_async_trace_vm",
         feature = "sleep_wakeup_trace_vm"
     )))]
-    let _ = event;
+    {
+        let _ = event;
+        None
+    }
+}
+
+#[inline(always)]
+pub fn emit_task_record(record: Option<TaskTraceRecord>) {
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    ))]
+    if let Some(record) = record {
+        let mut node = MCSNode::new();
+        let mut trace = TASK_TRACE.lock(&mut node);
+        trace.push(record);
+    }
+
+    #[cfg(not(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm"
+    )))]
+    let _ = record;
+}
+
+#[inline(always)]
+pub fn record_task_trace(event: TaskTraceEvent) {
+    let record = capture_task_record(event);
+    emit_task_record(record);
 }
 
 fn merge_records(mut records: Vec<BaselineTraceRecord>) -> Vec<BaselineTraceRecord> {

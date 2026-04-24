@@ -136,9 +136,38 @@ pub(crate) trait Scheduler {
     fn priority(&self) -> u8;
 }
 
+pub(crate) struct ScheduledTask {
+    pub(crate) task: Arc<Task>,
+
+    #[cfg(feature = "baseline_trace")]
+    pub(crate) dispatch_projection: Option<crate::task::BaselineDispatchProjection>,
+}
+
+impl ScheduledTask {
+    #[inline(always)]
+    pub(crate) fn new(task: Arc<Task>) -> Self {
+        Self {
+            task,
+
+            #[cfg(feature = "baseline_trace")]
+            dispatch_projection: None,
+        }
+    }
+
+    #[cfg(feature = "baseline_trace")]
+    #[inline(always)]
+    pub(crate) fn with_dispatch_projection(
+        mut self,
+        projection: crate::task::BaselineDispatchProjection,
+    ) -> Self {
+        self.dispatch_projection = Some(projection);
+        self
+    }
+}
+
 /// Get the next executable task.
 #[inline]
-pub(crate) fn get_next_task(execution_ensured: bool) -> Option<Arc<Task>> {
+pub(crate) fn get_next_task(execution_ensured: bool) -> Option<ScheduledTask> {
     let mut node = MCSNode::new();
     let _guard = GLOBAL_WAKE_GET_MUTEX.lock(&mut node);
 
@@ -150,7 +179,23 @@ pub(crate) fn get_next_task(execution_ensured: bool) -> Option<Arc<Task>> {
         crate::task::NUM_TASK_IN_QUEUE.fetch_sub(1, Ordering::Relaxed);
     }
 
-    task
+    task.map(|task| {
+        let scheduled = ScheduledTask::new(task);
+
+        #[cfg(feature = "baseline_trace")]
+        {
+            if execution_ensured {
+                let task_id = scheduled.task.id;
+                let projection = crate::task::capture_baseline_dispatch_projection(
+                    awkernel_lib::cpu::cpu_id(),
+                    task_id,
+                );
+                return scheduled.with_dispatch_projection(projection);
+            }
+        }
+
+        scheduled
+    })
 }
 
 /// Get a scheduler.

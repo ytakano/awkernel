@@ -125,7 +125,7 @@ impl PrioritizedRRScheduler {
             let elapsed = last_executed.elapsed().as_micros() as u64;
             if elapsed > self.interval {
                 if let Some(next_task) = get_next_task(false) {
-                    push_preemption_pending(cpu_id, next_task);
+                    push_preemption_pending(cpu_id, next_task.task);
                     let preempt_irq = awkernel_lib::interrupt::get_preempt_irq();
                     set_need_preemption(task_id, cpu_id);
                     awkernel_lib::interrupt::send_ipi(preempt_irq, cpu_id as u32);
