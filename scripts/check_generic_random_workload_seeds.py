@@ -60,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"base seed for the deterministic sequence, default 0x{DEFAULT_START_SEED:016x}",
     )
     parser.add_argument(
+        "--seed",
+        action="append",
+        type=parse_seed,
+        default=[],
+        help="exact seed to test; may be passed multiple times and is capped by max_runs",
+    )
+    parser.add_argument(
         "--ovmf-path",
         default="target/ovmf/x64",
         help="OVMF_PATH value passed to make, default target/ovmf/x64",
@@ -226,9 +233,12 @@ def run_one(args: argparse.Namespace, seed: int, index: int) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     failures: list[tuple[int, int, int]] = []
+    seeds = args.seed[: args.max_runs]
 
-    for index in range(args.max_runs):
-        seed = splitmix64(args.start_seed + index)
+    for index in range(len(seeds), args.max_runs):
+        seeds.append(splitmix64(args.start_seed + index))
+
+    for index, seed in enumerate(seeds):
         code = run_one(args, seed, index)
         if code != 0:
             failures.append((index, seed, code))

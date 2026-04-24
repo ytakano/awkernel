@@ -68,9 +68,34 @@ static PREEMPTION_REQUEST: [AtomicBool; NUM_MAX_CPU] =
     array![_ => AtomicBool::new(false); NUM_MAX_CPU];
 
 #[cfg(feature = "baseline_trace")]
+fn trace_task_id_of_task(task: &Task) -> u32 {
+    let mut node = MCSNode::new();
+    let info = task.info.lock(&mut node);
+    info.trace_task_id
+}
+
+#[cfg(feature = "baseline_trace")]
+pub(crate) fn trace_task_id_of_runtime_task_id(runtime_task_id: u32) -> Option<u32> {
+    let mut node = MCSNode::new();
+    let tasks = TASKS.lock(&mut node);
+
+    tasks
+        .id_to_task
+        .get(&runtime_task_id)
+        .map(|task| trace_task_id_of_task(task))
+}
+
+#[cfg(feature = "baseline_trace")]
 fn baseline_current_task_id(cpu_id: usize) -> Option<u32> {
     let id = RUNNING[cpu_id].load(Ordering::Relaxed);
-    (id != 0).then_some(id)
+    (id != 0)
+        .then_some(id)
+        .and_then(trace_task_id_of_runtime_task_id)
+}
+
+#[cfg(feature = "baseline_trace")]
+pub(crate) fn get_current_trace_task_id(cpu_id: usize) -> Option<u32> {
+    baseline_current_task_id(cpu_id)
 }
 
 #[cfg(feature = "baseline_trace")]
@@ -80,11 +105,11 @@ fn baseline_runnable_ids(extra_runnable: Option<u32>) -> Vec<u32> {
     let mut node = MCSNode::new();
     let tasks = TASKS.lock(&mut node);
 
-    for (&task_id, task) in tasks.id_to_task.iter() {
+    for task in tasks.id_to_task.values() {
         let mut node = MCSNode::new();
         let info = task.info.lock(&mut node);
         if info.state == State::Runnable {
-            runnable.push(task_id);
+            runnable.push(info.trace_task_id);
         }
     }
 
@@ -225,8 +250,9 @@ pub(crate) struct BaselineDispatchProjection {
 #[cfg(feature = "baseline_trace")]
 pub(crate) fn capture_baseline_dispatch_projection(
     cpu_id: usize,
-    task_id: u32,
+    runtime_task_id: u32,
 ) -> BaselineDispatchProjection {
+    let task_id = trace_task_id_of_runtime_task_id(runtime_task_id).unwrap_or(runtime_task_id);
     let need_resched = PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed);
     let dispatch = baseline_trace::capture_sched_and_task_dispatch(
         task_id,
@@ -347,7 +373,7 @@ impl ArcWake for Task {
         NUM_TASK_IN_QUEUE.fetch_add(1, Ordering::Release);
 
         #[cfg(feature = "baseline_trace")]
-        let trace_task_id = self.id;
+        let trace_task_id = trace_task_id_of_task(&self);
 
         #[cfg(feature = "baseline_trace")]
         {
@@ -388,6 +414,8 @@ pub struct TaskInfo {
     pub(crate) need_preemption: bool,
     panicked: bool,
     pub(crate) dag_info: Option<DagInfo>,
+    #[cfg(feature = "baseline_trace")]
+    trace_task_id: u32,
 
     #[cfg(not(feature = "no_preempt"))]
     thread: Option<PtrWorkerThreadContext>,
@@ -506,6 +534,9 @@ impl Tasks {
 
             // Find an unused task ID.
             if let btree_map::Entry::Vacant(e) = self.id_to_task.entry(id) {
+                #[cfg(feature = "baseline_trace")]
+                let trace_task_id = baseline_trace::next_trace_task_id();
+
                 let info = Mutex::new(TaskInfo {
                     scheduler_type,
                     state: State::Initialized,
@@ -516,6 +547,8 @@ impl Tasks {
                     need_preemption: false,
                     panicked: false,
                     dag_info,
+                    #[cfg(feature = "baseline_trace")]
+                    trace_task_id,
 
                     #[cfg(not(feature = "no_preempt"))]
                     thread: None,
@@ -632,7 +665,7 @@ pub fn inner_spawn(
 
     let scheduler = get_scheduler(sched_type);
     #[cfg(feature = "baseline_trace")]
-    let parent_task_id = get_current_task(awkernel_lib::cpu::cpu_id());
+    let parent_task_id = get_current_trace_task_id(awkernel_lib::cpu::cpu_id());
 
     let mut node = MCSNode::new();
     let mut tasks = TASKS.lock(&mut node);
@@ -642,9 +675,13 @@ pub fn inner_spawn(
 
     #[cfg(feature = "baseline_trace")]
     {
+        let child_task_id = task
+            .as_ref()
+            .map(|task| trace_task_id_of_task(task))
+            .unwrap_or(id);
         record_workload_task_trace(TaskTraceEvent::Spawn {
             parent_task_id,
-            child_task_id: id,
+            child_task_id,
         });
     }
 
@@ -1148,14 +1185,18 @@ pub fn run_main() {
                     // The task has been terminated.
 
                     info.state = State::Terminated;
+                    #[cfg(feature = "baseline_trace")]
+                    let trace_task_id = info.trace_task_id;
                     drop(info);
 
                     #[cfg(feature = "baseline_trace")]
-                    record_baseline_complete(cpu_id, task.id);
+                    record_baseline_complete(cpu_id, trace_task_id);
 
                     #[cfg(feature = "baseline_trace")]
                     {
-                        record_workload_task_trace(TaskTraceEvent::Complete { task_id: task.id });
+                        record_workload_task_trace(TaskTraceEvent::Complete {
+                            task_id: trace_task_id,
+                        });
                     }
 
                     #[cfg(all(

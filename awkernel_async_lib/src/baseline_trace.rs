@@ -7,9 +7,8 @@ use alloc::{
 use array_macro::array;
 use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
-use core::sync::atomic::AtomicU64;
-#[cfg(not(feature = "std"))]
 use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::AtomicU64;
 
 #[cfg(not(feature = "std"))]
 use awkernel_lib::console;
@@ -158,12 +157,14 @@ static BASELINE_TRACE: [Mutex<TraceBuffer>; NUM_MAX_CPU] =
     array![_ => Mutex::new(TraceBuffer::new()); NUM_MAX_CPU];
 static TASK_TRACE: Mutex<TaskTraceBuffer> = Mutex::new(TaskTraceBuffer::new());
 static TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(0);
+static TRACE_TASK_ID: AtomicU32 = AtomicU32::new(1);
 #[cfg(not(feature = "std"))]
 static DUMP_ON_COMPLETE_TASK_ID: AtomicU32 = AtomicU32::new(0);
 
 #[inline(always)]
 pub fn reset() {
     TRACE_EVENT_ID.store(0, core::sync::atomic::Ordering::Release);
+    TRACE_TASK_ID.store(1, Ordering::Release);
     for trace in BASELINE_TRACE.iter() {
         let mut node = MCSNode::new();
         let mut trace = trace.lock(&mut node);
@@ -172,6 +173,11 @@ pub fn reset() {
     let mut node = MCSNode::new();
     let mut task_trace = TASK_TRACE.lock(&mut node);
     task_trace.reset();
+}
+
+#[inline(always)]
+pub(crate) fn next_trace_task_id() -> u32 {
+    TRACE_TASK_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 #[inline(always)]
