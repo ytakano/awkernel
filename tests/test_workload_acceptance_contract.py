@@ -46,7 +46,10 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         search_roots.append(pathlib.Path("/home/ytakano/program/rocq/awkernel_refinement"))
         for root in search_roots:
             for candidate in [root, *root.parents]:
-                if (candidate / "scheduling_theory").is_dir() and (candidate / "documents").is_dir():
+                if (
+                    (candidate / "scheduling_theory").is_dir()
+                    and (candidate / "awkernel_refinemnet_doc").is_dir()
+                ):
                     return candidate
         raise RuntimeError(f"failed to locate awkernel_refinement repo root from {search_roots}")
 

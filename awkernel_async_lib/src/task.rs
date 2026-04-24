@@ -94,6 +94,15 @@ fn baseline_runnable_ids(extra_runnable: Option<u32>) -> Vec<u32> {
 }
 
 #[cfg(feature = "baseline_trace")]
+fn baseline_choose_runnable_ids(chosen_task_id: u32) -> Vec<u32> {
+    let mut runnable = baseline_runnable_ids(Some(chosen_task_id));
+
+    runnable.retain(|&task_id| task_id != chosen_task_id);
+    runnable.insert(0, chosen_task_id);
+    runnable
+}
+
+#[cfg(feature = "baseline_trace")]
 fn baseline_snapshot(
     cpu_id: usize,
     current: Option<u32>,
@@ -137,6 +146,47 @@ fn baseline_snapshot(
 }
 
 #[cfg(feature = "baseline_trace")]
+fn baseline_choose_snapshot(
+    cpu_id: usize,
+    task_id: u32,
+    need_resched: bool,
+) -> BaselineTraceSnapshot {
+    let num_cpu = awkernel_lib::cpu::num_cpu();
+    let mut worker_current = Vec::new();
+    let mut worker_need_resched = Vec::new();
+    let mut worker_dispatch_target = Vec::new();
+
+    for worker_cpu in 1..num_cpu {
+        worker_current.push(if worker_cpu == cpu_id {
+            None
+        } else {
+            baseline_current_task_id(worker_cpu)
+        });
+        worker_need_resched.push(if worker_cpu == cpu_id {
+            need_resched
+        } else {
+            PREEMPTION_REQUEST[worker_cpu].load(Ordering::Relaxed)
+        });
+        worker_dispatch_target.push(if worker_cpu == cpu_id {
+            Some(task_id)
+        } else {
+            None
+        });
+    }
+
+    BaselineTraceSnapshot {
+        cpu_id,
+        current: None,
+        runnable: baseline_choose_runnable_ids(task_id),
+        need_resched,
+        dispatch_target: Some(task_id),
+        worker_current,
+        worker_need_resched,
+        worker_dispatch_target,
+    }
+}
+
+#[cfg(feature = "baseline_trace")]
 fn record_baseline_wakeup(task_id: u32) {
     baseline_trace::record(
         BaselineTraceEvent::Wakeup { task_id },
@@ -164,7 +214,7 @@ fn record_baseline_handle_resched(cpu_id: usize) {
 fn record_baseline_choose(cpu_id: usize, task_id: u32, need_resched: bool) {
     baseline_trace::record(
         BaselineTraceEvent::Choose { task_id },
-        baseline_snapshot(cpu_id, None, Some(task_id), need_resched, Some(task_id)),
+        baseline_choose_snapshot(cpu_id, task_id, need_resched),
     );
 }
 
