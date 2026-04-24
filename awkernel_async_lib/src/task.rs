@@ -192,7 +192,9 @@ fn baseline_choose_snapshot(
 }
 
 #[cfg(feature = "baseline_trace")]
-fn record_baseline_wakeup(task_id: u32) {
+fn record_baseline_runnable_projection(task_id: u32) {
+    // Adapter-local projection: this records that TaskInfo became Runnable.
+    // It is not a concrete scheduler-queue insertion observation.
     baseline_trace::record(
         BaselineTraceEvent::Wakeup { task_id },
         baseline_snapshot(0, baseline_current_task_id(0), Some(task_id), false, None),
@@ -349,7 +351,10 @@ impl ArcWake for Task {
 
         #[cfg(feature = "baseline_trace")]
         {
-            record_baseline_wakeup(trace_task_id);
+            // This lifecycle trace is emitted after the TaskInfo state becomes
+            // Runnable and before scheduler::wake_task performs queue/preempt
+            // handling. It projects release into the abstract runnable view.
+            record_baseline_runnable_projection(trace_task_id);
             record_workload_task_trace(TaskTraceEvent::Runnable {
                 task_id: trace_task_id,
             });
