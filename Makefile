@@ -210,13 +210,14 @@ WORKLOAD_TRACE_FEATURE_single_async=single_async_trace_vm
 WORKLOAD_TRACE_FEATURE_nested_spawn=nested_spawn_trace_vm
 WORKLOAD_TRACE_FEATURE_multi_async=multi_async_trace_vm
 WORKLOAD_TRACE_FEATURE_sleep_wakeup=sleep_wakeup_trace_vm
+WORKLOAD_TRACE_FEATURE_generic_random=generic_trace_vm
 WORKLOAD_TRACE_FEATURE=$(WORKLOAD_TRACE_FEATURE_$(WORKLOAD_SCENARIO))
 WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_TIMEOUT ?= 120s
 WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
 WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
-WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup
+WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup generic_random
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000

@@ -135,6 +135,11 @@ sleep_wakeup_trace_vm = [
     "awkernel_async_lib/sleep_wakeup_trace_vm",
     "userland/sleep_wakeup_trace_vm",
 ]
+generic_trace_vm = [
+    "baseline_trace",
+    "awkernel_async_lib/generic_trace_vm",
+    "userland/generic_trace_vm",
+]
 aarch64 = [
     "perf",
     "no_std_unwinding",

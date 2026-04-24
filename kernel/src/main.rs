@@ -17,7 +17,8 @@ use awkernel_async_lib::{scheduler::wake_task, task};
     feature = "single_async_trace_vm",
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm"
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
 )))]
 use awkernel_async_lib::scheduler::SchedulerType;
 use core::{
@@ -82,13 +83,17 @@ fn main<Info: Debug>(kernel_info: KernelInfo<Info>) {
         #[cfg(feature = "sleep_wakeup_trace_vm")]
         userland::install_sleep_wakeup_trace_vm();
 
+        #[cfg(feature = "generic_trace_vm")]
+        userland::install_generic_trace_vm();
+
         #[cfg(not(any(
             feature = "baseline_trace_vm",
             feature = "handoff_trace_vm",
             feature = "single_async_trace_vm",
             feature = "nested_spawn_trace_vm",
             feature = "multi_async_trace_vm",
-            feature = "sleep_wakeup_trace_vm"
+            feature = "sleep_wakeup_trace_vm",
+            feature = "generic_trace_vm"
         )))]
         task::spawn(
             "main".into(),

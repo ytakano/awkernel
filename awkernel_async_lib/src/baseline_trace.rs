@@ -141,7 +141,8 @@ impl TaskTraceBuffer {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     ))]
     fn push(&mut self, record: TaskTraceRecord) {
         if self.records.len() >= LIFECYCLE_TRACE_CAPACITY {
@@ -236,7 +237,8 @@ fn capture_task_record_with_event_id(
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     ))]
     {
         Some(TaskTraceRecord { event_id, event })
@@ -246,7 +248,8 @@ fn capture_task_record_with_event_id(
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     )))]
     {
         let _ = event_id;
@@ -261,7 +264,8 @@ pub fn capture_task_record(event: TaskTraceEvent) -> Option<TaskTraceRecord> {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     ))]
     {
         Some(TaskTraceRecord {
@@ -274,7 +278,8 @@ pub fn capture_task_record(event: TaskTraceEvent) -> Option<TaskTraceRecord> {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     )))]
     {
         let _ = event;
@@ -327,7 +332,8 @@ pub fn emit_task_record(record: Option<TaskTraceRecord>) {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     ))]
     if let Some(record) = record {
         let mut node = MCSNode::new();
@@ -339,7 +345,8 @@ pub fn emit_task_record(record: Option<TaskTraceRecord>) {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     )))]
     let _ = record;
 }
@@ -671,7 +678,8 @@ pub fn dump_to_console() {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     ))]
     {
         console::print(&format!("{SCHED_TRACE_BEGIN_MARKER}\r\n"));
@@ -918,7 +926,8 @@ mod tests {
             feature = "single_async_trace_vm",
             feature = "nested_spawn_trace_vm",
             feature = "multi_async_trace_vm",
-            feature = "sleep_wakeup_trace_vm"
+            feature = "sleep_wakeup_trace_vm",
+            feature = "generic_trace_vm"
         )))]
         assert!(task_trace_records().is_empty());
     }
@@ -950,7 +959,8 @@ mod tests {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     ))]
     #[test]
     fn dispatch_capture_pairs_sched_and_task_event_ids() {
@@ -983,7 +993,8 @@ mod tests {
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm"
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
     ))]
     #[test]
     fn delayed_dispatch_emit_keeps_task_trace_order_by_reserved_event_id() {
