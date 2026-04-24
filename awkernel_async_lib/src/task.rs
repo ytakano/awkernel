@@ -36,9 +36,7 @@ use futures::{
 };
 
 #[cfg(feature = "baseline_trace")]
-use crate::baseline_trace::{
-    self, BaselineTraceEvent, BaselineTraceSnapshot, TaskTraceEvent,
-};
+use crate::baseline_trace::{self, BaselineTraceEvent, BaselineTraceSnapshot, TaskTraceEvent};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -103,12 +101,38 @@ fn baseline_snapshot(
     need_resched: bool,
     dispatch_target: Option<u32>,
 ) -> BaselineTraceSnapshot {
+    let num_cpu = awkernel_lib::cpu::num_cpu();
+    let mut worker_current = Vec::new();
+    let mut worker_need_resched = Vec::new();
+    let mut worker_dispatch_target = Vec::new();
+
+    for worker_cpu in 1..num_cpu {
+        worker_current.push(if worker_cpu == cpu_id {
+            current
+        } else {
+            baseline_current_task_id(worker_cpu)
+        });
+        worker_need_resched.push(if worker_cpu == cpu_id {
+            need_resched
+        } else {
+            PREEMPTION_REQUEST[worker_cpu].load(Ordering::Relaxed)
+        });
+        worker_dispatch_target.push(if worker_cpu == cpu_id {
+            dispatch_target
+        } else {
+            None
+        });
+    }
+
     BaselineTraceSnapshot {
         cpu_id,
         current,
         runnable: baseline_runnable_ids(extra_runnable),
         need_resched,
         dispatch_target,
+        worker_current,
+        worker_need_resched,
+        worker_dispatch_target,
     }
 }
 

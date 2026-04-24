@@ -48,6 +48,26 @@ listFromCsv csv = listFromFields (splitOn ',' csv)
       tailNats <- listFromFields xs
       pure (A.Cons headNat tailNats)
 
+optionListFromCsv :: String -> Either String (A.List (A.Option A.JobId))
+optionListFromCsv "" = Right A.Nil
+optionListFromCsv csv = listFromFields (splitOn ',' csv)
+  where
+    listFromFields [] = Right A.Nil
+    listFromFields (x:xs) = do
+      headNat <- optionNatFromField x
+      tailNats <- listFromFields xs
+      pure (A.Cons headNat tailNats)
+
+boolListFromCsv :: String -> Either String (A.List A.Bool)
+boolListFromCsv "" = Right A.Nil
+boolListFromCsv csv = listFromFields (splitOn ',' csv)
+  where
+    listFromFields [] = Right A.Nil
+    listFromFields (x:xs) = do
+      headBool <- boolFromField x
+      tailBools <- listFromFields xs
+      pure (A.Cons headBool tailBools)
+
 eventFromFields :: String -> String -> String -> Either String A.OpEvent
 eventFromFields "Wakeup" a "-" = A.EvWakeup <$> natFromField a
 eventFromFields "RequestResched" a "-" = A.EvRequestResched <$> natFromField a
@@ -59,16 +79,34 @@ eventFromFields "Stutter" "-" "-" = Right A.EvStutter
 eventFromFields tag _ _ = Left ("unsupported event fields: " ++ show tag)
 
 schedTraceEntryFromFields :: [String] -> Either String A.AwkernelSchedTraceEntry
-schedTraceEntryFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField] = do
+schedTraceEntryFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField] =
+  schedTraceEntryFromCoreFields
+    cpuField eventTag eventA eventB currentField runnableCsv needReschedField dispatchField
+    currentField needReschedField dispatchField
+schedTraceEntryFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField, candidatePrefixCsv] = do
+  _candidatePrefix <- listFromCsv candidatePrefixCsv
+  schedTraceEntryFromCoreFields
+    cpuField eventTag eventA eventB currentField runnableCsv needReschedField dispatchField
+    currentField needReschedField dispatchField
+schedTraceEntryFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField, workerCurrentCsv, workerNeedReschedCsv, workerDispatchCsv] =
+  schedTraceEntryFromCoreFields
+    cpuField eventTag eventA eventB currentField runnableCsv needReschedField dispatchField
+    workerCurrentCsv workerNeedReschedCsv workerDispatchCsv
+schedTraceEntryFromFields fields =
+  Left ("expected 8, 9, or 11 TSV columns, got " ++ show (length fields) ++ " from " ++ show fields)
+
+schedTraceEntryFromCoreFields :: String -> String -> String -> String -> String -> String -> String -> String -> String -> String -> String -> Either String A.AwkernelSchedTraceEntry
+schedTraceEntryFromCoreFields cpuField eventTag eventA eventB currentField runnableCsv needReschedField dispatchField workerCurrentCsv workerNeedReschedCsv workerDispatchCsv = do
   cpu <- natFromField cpuField
   event <- eventFromFields eventTag eventA eventB
   current <- optionNatFromField currentField
   runnable <- listFromCsv runnableCsv
   needResched <- boolFromField needReschedField
   dispatch <- optionNatFromField dispatchField
-  pure (A.MkAwkernelSchedTraceEntry cpu event current runnable needResched dispatch)
-schedTraceEntryFromFields fields =
-  Left ("expected 8 TSV columns, got " ++ show (length fields) ++ " from " ++ show fields)
+  workerCurrent <- optionListFromCsv workerCurrentCsv
+  workerNeedResched <- boolListFromCsv workerNeedReschedCsv
+  workerDispatch <- optionListFromCsv workerDispatchCsv
+  pure (A.MkAwkernelSchedTraceEntry cpu event current runnable needResched dispatch workerCurrent workerNeedResched workerDispatch)
 
 schedTraceFromLines :: Int -> [String] -> Either (Int, String) (A.List A.AwkernelSchedTraceEntry)
 schedTraceFromLines _ [] = Right A.Nil

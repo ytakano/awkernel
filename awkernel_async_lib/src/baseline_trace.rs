@@ -64,6 +64,9 @@ pub struct BaselineTraceSnapshot {
     pub runnable: Vec<u32>,
     pub need_resched: bool,
     pub dispatch_target: Option<u32>,
+    pub worker_current: Vec<Option<u32>>,
+    pub worker_need_resched: Vec<bool>,
+    pub worker_dispatch_target: Vec<Option<u32>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,9 +315,39 @@ fn render_rocq_list(values: &[u32]) -> String {
     }
 }
 
+fn render_rocq_option_list(values: &[Option<u32>]) -> String {
+    if values.is_empty() {
+        "[]".to_string()
+    } else {
+        format!(
+            "[{}]",
+            values
+                .iter()
+                .map(|value| render_rocq_option(*value))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    }
+}
+
+fn render_rocq_bool_list(values: &[bool]) -> String {
+    if values.is_empty() {
+        "[]".to_string()
+    } else {
+        format!(
+            "[{}]",
+            values
+                .iter()
+                .map(|value| if *value { "true".to_string() } else { "false".to_string() })
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    }
+}
+
 fn render_rocq_row(record: BaselineTraceRecord) -> String {
     format!(
-        "mkAwkernelSchedTraceEntry {} ({}) {} {} {} {}",
+        "mkAwkernelSchedTraceEntry {} ({}) {} {} {} {} {} {} {}",
         record.snapshot.cpu_id,
         render_rocq_event(record.event),
         render_rocq_option(record.snapshot.current),
@@ -324,7 +357,10 @@ fn render_rocq_row(record: BaselineTraceRecord) -> String {
         } else {
             "false"
         },
-        render_rocq_option(record.snapshot.dispatch_target)
+        render_rocq_option(record.snapshot.dispatch_target),
+        render_rocq_option_list(&record.snapshot.worker_current),
+        render_rocq_bool_list(&record.snapshot.worker_need_resched),
+        render_rocq_option_list(&record.snapshot.worker_dispatch_target)
     )
 }
 
@@ -353,6 +389,22 @@ fn render_trace_rows_option(value: Option<u32>) -> String {
     }
 }
 
+fn render_trace_rows_option_list(values: &[Option<u32>]) -> String {
+    values
+        .iter()
+        .map(|value| render_trace_rows_option(*value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn render_trace_rows_bool_list(values: &[bool]) -> String {
+    values
+        .iter()
+        .map(|value| if *value { "true".to_string() } else { "false".to_string() })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn render_trace_rows_runnable(values: &[u32]) -> String {
     values
         .iter()
@@ -364,7 +416,7 @@ fn render_trace_rows_runnable(values: &[u32]) -> String {
 fn render_trace_rows_record(record: BaselineTraceRecord) -> String {
     let (event_tag, arg0, arg1) = render_trace_rows_event(record.event);
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         record.snapshot.cpu_id,
         event_tag,
         render_trace_rows_option(arg0),
@@ -376,7 +428,10 @@ fn render_trace_rows_record(record: BaselineTraceRecord) -> String {
         } else {
             "false"
         },
-        render_trace_rows_option(record.snapshot.dispatch_target)
+        render_trace_rows_option(record.snapshot.dispatch_target),
+        render_trace_rows_option_list(&record.snapshot.worker_current),
+        render_trace_rows_bool_list(&record.snapshot.worker_need_resched),
+        render_trace_rows_option_list(&record.snapshot.worker_dispatch_target)
     )
 }
 
@@ -566,6 +621,9 @@ mod tests {
                 runnable: vec![1],
                 need_resched: false,
                 dispatch_target: None,
+                worker_current: vec![None],
+                worker_need_resched: vec![false],
+                worker_dispatch_target: vec![None],
             },
         );
         record(
@@ -576,6 +634,9 @@ mod tests {
                 runnable: vec![],
                 need_resched: false,
                 dispatch_target: None,
+                worker_current: vec![None],
+                worker_need_resched: vec![false],
+                worker_dispatch_target: vec![None],
             },
         );
 
@@ -600,6 +661,9 @@ mod tests {
                 runnable: vec![],
                 need_resched: false,
                 dispatch_target: None,
+                worker_current: vec![Some(7)],
+                worker_need_resched: vec![false],
+                worker_dispatch_target: vec![None],
             },
         );
 
@@ -622,6 +686,9 @@ mod tests {
                 runnable: vec![1],
                 need_resched: false,
                 dispatch_target: None,
+                worker_current: vec![None],
+                worker_need_resched: vec![false],
+                worker_dispatch_target: vec![None],
             },
         );
         record(
@@ -632,6 +699,9 @@ mod tests {
                 runnable: vec![1],
                 need_resched: true,
                 dispatch_target: None,
+                worker_current: vec![None],
+                worker_need_resched: vec![true],
+                worker_dispatch_target: vec![None],
             },
         );
 
@@ -645,12 +715,12 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("mkAwkernelSchedTraceEntry 0 (EvWakeup 1) None [1] false None"))
+                .any(|line| line.contains("mkAwkernelSchedTraceEntry 0 (EvWakeup 1) None [1] false None [None] [false] [None]"))
         );
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("mkAwkernelSchedTraceEntry 1 (EvRequestResched 1) None [1] true None"))
+                .any(|line| line.contains("mkAwkernelSchedTraceEntry 1 (EvRequestResched 1) None [1] true None [None] [true] [None]"))
         );
     }
 
@@ -666,6 +736,9 @@ mod tests {
                 runnable: vec![1],
                 need_resched: true,
                 dispatch_target: Some(1),
+                worker_current: vec![None],
+                worker_need_resched: vec![true],
+                worker_dispatch_target: vec![Some(1)],
             },
         );
         record(
@@ -676,13 +749,16 @@ mod tests {
                 runnable: vec![],
                 need_resched: false,
                 dispatch_target: None,
+                worker_current: vec![Some(1)],
+                worker_need_resched: vec![false],
+                worker_dispatch_target: vec![None],
             },
         );
 
         let lines = render_trace_rows_artifact_lines();
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "1\tChoose\t1\t1\t-\t1\ttrue\t1");
-        assert_eq!(lines[1], "1\tDispatch\t1\t1\t1\t\tfalse\t-");
+        assert_eq!(lines[0], "1\tChoose\t1\t1\t-\t1\ttrue\t1\t-\ttrue\t1");
+        assert_eq!(lines[1], "1\tDispatch\t1\t1\t1\t\tfalse\t-\t1\tfalse\t-");
     }
 
     #[test]
@@ -698,6 +774,9 @@ mod tests {
                     runnable: vec![],
                     need_resched: false,
                     dispatch_target: None,
+                    worker_current: vec![Some(2)],
+                    worker_need_resched: vec![false],
+                    worker_dispatch_target: vec![None],
                 },
             },
             BaselineTraceRecord {
@@ -710,6 +789,9 @@ mod tests {
                     runnable: vec![1],
                     need_resched: false,
                     dispatch_target: None,
+                    worker_current: vec![None],
+                    worker_need_resched: vec![false],
+                    worker_dispatch_target: vec![None],
                 },
             },
             BaselineTraceRecord {
@@ -722,6 +804,9 @@ mod tests {
                     runnable: vec![1],
                     need_resched: true,
                     dispatch_target: None,
+                    worker_current: vec![None],
+                    worker_need_resched: vec![true],
+                    worker_dispatch_target: vec![None],
                 },
             },
         ]);
@@ -748,6 +833,9 @@ mod tests {
                     runnable: vec![task_id],
                     need_resched: false,
                     dispatch_target: None,
+                    worker_current: vec![None],
+                    worker_need_resched: vec![false],
+                    worker_dispatch_target: vec![None],
                 },
             );
         }
@@ -764,6 +852,9 @@ mod tests {
                 runnable: vec![TRACE_CAPACITY as u32],
                 need_resched: false,
                 dispatch_target: None,
+                worker_current: vec![None],
+                worker_need_resched: vec![false],
+                worker_dispatch_target: vec![None],
             },
         );
 

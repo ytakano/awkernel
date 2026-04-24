@@ -71,6 +71,42 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         runner_path.write_text("import sys\n" + body + "\n", encoding="utf-8")
         return runner_path
 
+    @staticmethod
+    def make_sched_trace_row(
+        cpu: int,
+        event_tag: str,
+        event_a: str,
+        event_b: str,
+        current: str,
+        runnable: str,
+        need_resched: str,
+        dispatch_target: str,
+        worker_current: str | None = None,
+        worker_need_resched: str | None = None,
+        worker_dispatch_target: str | None = None,
+    ) -> str:
+        if worker_current is None:
+            worker_current = current
+        if worker_need_resched is None:
+            worker_need_resched = need_resched
+        if worker_dispatch_target is None:
+            worker_dispatch_target = dispatch_target
+        return "\t".join(
+            [
+                str(cpu),
+                event_tag,
+                event_a,
+                event_b,
+                current,
+                runnable,
+                need_resched,
+                dispatch_target,
+                worker_current,
+                worker_need_resched,
+                worker_dispatch_target,
+            ]
+        )
+
     def make_python_runhaskell_shim(self) -> pathlib.Path:
         tmpdir = tempfile.TemporaryDirectory(prefix="workload-accept-runhaskell-")
         self.addCleanup(tmpdir.cleanup)
@@ -183,7 +219,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                 ]
             )
@@ -199,7 +235,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "END_TASK_TRACE",
@@ -244,10 +280,10 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -290,7 +326,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -319,7 +355,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -340,7 +376,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -393,7 +429,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Broken\t1\t-",
@@ -421,7 +457,34 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "1\tPreempt\t1\t2\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(1, "Preempt", "1", "2", "-", "1", "false", "-"),
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "Spawn\t1\t-",
+                    "END_TASK_TRACE",
+                ]
+            ),
+            runhaskell=self.runhaskell,
+            runner=self.runner,
+            checker_dir=self.checker_dir,
+        )
+        self.assertEqual(code, RUNNER_FAILURE_EXIT)
+        self.assert_single_json_stdout(stdout)
+        self.assert_common_failure(payload, kind="sched-trace-parse-failure")
+        self.assertEqual(payload["sched_trace_index"], 0)
+        self.assertEqual(payload["log_line_begin"], 2)
+        self.assertEqual(payload["log_line_end"], 2)
+
+    @unittest.skipUnless(
+        (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
+        "runhaskell not available",
+    )
+    def test_malformed_candidate_prefix_stays_a_sched_trace_parse_failure(self) -> None:
+        code, payload, stdout, _ = self.run_wrapper(
+            log_text="\n".join(
+                [
+                    "BEGIN_SCHED_TRACE",
+                    "1\tChoose\t1\t1\t-\t1\tfalse\t1\tbogus\tfalse\t1",
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -448,7 +511,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Wake\t1\t-",
@@ -475,8 +538,8 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "1\tComplete\t1\t-\t-\t\ttrue\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "", "true", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -508,10 +571,10 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "1\tChoose\t1\t1\t-\t2,1\tfalse\t1",
-                    "1\tDispatch\t1\t1\t1\t\tfalse\t-",
-                    "1\tComplete\t1\t-\t-\t\ttrue\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "Choose", "1", "1", "-", "2,1", "false", "1"),
+                    self.make_sched_trace_row(1, "Dispatch", "1", "1", "1", "", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "", "true", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -558,10 +621,10 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "1\tChoose\t1\t1\t-\t1,2\tfalse\t1",
-                    "1\tDispatch\t1\t1\t1\t2\tfalse\t-",
-                    "1\tComplete\t1\t-\t-\t2\ttrue\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "Choose", "1", "1", "-", "1,2", "false", "1"),
+                    self.make_sched_trace_row(1, "Dispatch", "1", "1", "1", "2", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "2", "true", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
@@ -595,10 +658,10 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             log_text="\n".join(
                 [
                     "BEGIN_SCHED_TRACE",
-                    "0\tWakeup\t1\t-\t-\t1\tfalse\t-",
-                    "1\tChoose\t1\t1\t-\t1\tfalse\t1",
-                    "1\tDispatch\t1\t1\t1\t\tfalse\t-",
-                    "1\tComplete\t1\t-\t-\t\ttrue\t-",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "Choose", "1", "1", "-", "1", "false", "1"),
+                    self.make_sched_trace_row(1, "Dispatch", "1", "1", "1", "", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "", "true", "-"),
                     "END_SCHED_TRACE",
                     "BEGIN_TASK_TRACE",
                     "Spawn\t1\t-",
