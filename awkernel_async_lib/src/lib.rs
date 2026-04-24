@@ -218,7 +218,7 @@ where
         async move {
             let result = future.await;
             #[cfg(feature = "baseline_trace")]
-            crate::task::record_current_task_logical_complete();
+            crate::task::record_current_task_join_target_ready();
             let _ = tx.send(result);
             Ok(())
         },

@@ -696,6 +696,79 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
         "runhaskell not available",
     )
+    def test_join_target_ready_trace_kind_is_accepted(self) -> None:
+        code, payload, stdout, stderr = self.run_wrapper(
+            log_text="\n".join(
+                [
+                    "BEGIN_SCHED_TRACE",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "JoinTargetReady", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "Choose", "1", "1", "-", "1", "false", "1"),
+                    self.make_sched_trace_row(1, "Dispatch", "1", "1", "1", "", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "", "true", "-"),
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "Spawn\t1\t-",
+                    "Runnable\t1\t-",
+                    "JoinTargetReady\t1\t-",
+                    "Choose\t1\t-",
+                    "Dispatch\t1\t-",
+                    "Complete\t1\t-",
+                    "END_TASK_TRACE",
+                ]
+            ),
+            runhaskell=self.runhaskell,
+            runner=self.runner,
+            checker_dir=self.checker_dir,
+        )
+        self.assertEqual(code, ACCEPTED_EXIT)
+        self.assert_single_json_stdout(stdout)
+        self.assertEqual(set(payload.keys()), EXPECTED_KEYS)
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["kind"], "accepted")
+        self.assertIn("accepted", stderr)
+
+    @unittest.skipUnless(
+        (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
+        "runhaskell not available",
+    )
+    def test_join_wait_completion_requires_join_target_ready(self) -> None:
+        code, payload, stdout, _ = self.run_wrapper(
+            log_text="\n".join(
+                [
+                    "BEGIN_SCHED_TRACE",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(0, "Wakeup", "2", "-", "-", "1,2", "false", "-"),
+                    self.make_sched_trace_row(1, "Choose", "1", "1", "-", "1,2", "false", "1"),
+                    self.make_sched_trace_row(1, "Dispatch", "1", "1", "1", "2", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "2", "true", "-"),
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "Spawn\t1\t-",
+                    "Spawn\t2\t1",
+                    "Runnable\t1\t-",
+                    "Runnable\t2\t-",
+                    "Choose\t1\t-",
+                    "Dispatch\t1\t-",
+                    "JoinWait\t1\t2",
+                    "Complete\t1\t-",
+                    "END_TASK_TRACE",
+                ]
+            ),
+            runhaskell=self.runhaskell,
+            runner=self.runner,
+            checker_dir=self.checker_dir,
+        )
+        self.assertEqual(code, RUNNER_FAILURE_EXIT)
+        self.assert_single_json_stdout(stdout)
+        self.assert_common_failure(payload, kind="workload-family-rejection")
+        self.assertIsNone(payload["sched_trace_index"])
+        self.assertIsNone(payload["task_trace_index"])
+
+    @unittest.skipUnless(
+        (os.environ.get("WORKLOAD_ACCEPT_RUNHASKELL") or shutil.which("runhaskell")) is not None,
+        "runhaskell not available",
+    )
     def test_stutter_with_need_resched_true_is_accepted(self) -> None:
         code, payload, stdout, stderr = self.run_wrapper(
             log_text="\n".join(

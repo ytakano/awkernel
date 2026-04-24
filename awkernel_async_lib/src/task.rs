@@ -75,7 +75,7 @@ fn trace_task_id_of_task(task: &Task) -> u32 {
 }
 
 #[cfg(feature = "baseline_trace")]
-pub(crate) fn record_current_task_logical_complete() {
+pub(crate) fn record_current_task_join_target_ready() {
     let cpu_id = awkernel_lib::cpu::cpu_id();
     let runtime_task_id = match get_current_task(cpu_id) {
         Some(task_id) => task_id,
@@ -94,16 +94,23 @@ pub(crate) fn record_current_task_logical_complete() {
 
     let trace_task_id = {
         let mut node = MCSNode::new();
-        let mut info = task.info.lock(&mut node);
-        if info.completion_trace_recorded {
-            return;
-        }
-        info.completion_trace_recorded = true;
+        let info = task.info.lock(&mut node);
         info.trace_task_id
     };
 
-    record_baseline_complete(cpu_id, trace_task_id);
-    record_workload_task_trace(TaskTraceEvent::Complete {
+    baseline_trace::record(
+        BaselineTraceEvent::JoinTargetReady {
+            task_id: trace_task_id,
+        },
+        baseline_snapshot(
+            cpu_id,
+            Some(trace_task_id),
+            None,
+            PREEMPTION_REQUEST[cpu_id].load(Ordering::Relaxed),
+            None,
+        ),
+    );
+    record_workload_task_trace(TaskTraceEvent::JoinTargetReady {
         task_id: trace_task_id,
     });
 }

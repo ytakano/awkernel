@@ -75,6 +75,7 @@ eventFromFields "HandleResched" a "-" = A.EvHandleResched <$> natFromField a
 eventFromFields "Choose" a b = A.EvChoose <$> natFromField a <*> natFromField b
 eventFromFields "Dispatch" a b = A.EvDispatch <$> natFromField a <*> natFromField b
 eventFromFields "Complete" a "-" = A.EvComplete <$> natFromField a
+eventFromFields "JoinTargetReady" a "-" = A.EvJoinTargetReady <$> natFromField a
 eventFromFields "Stutter" "-" "-" = Right A.EvStutter
 eventFromFields tag _ _ = Left ("unsupported event fields: " ++ show tag)
 
@@ -124,6 +125,7 @@ taskTraceKindFromField "Choose" = Right A.LkChoose
 taskTraceKindFromField "Dispatch" = Right A.LkDispatch
 taskTraceKindFromField "Sleep" = Right A.LkSleep
 taskTraceKindFromField "JoinWait" = Right A.LkJoinWait
+taskTraceKindFromField "JoinTargetReady" = Right A.LkJoinTargetReady
 taskTraceKindFromField "Complete" = Right A.LkComplete
 taskTraceKindFromField field = Left ("unsupported task_trace kind: " ++ show field)
 

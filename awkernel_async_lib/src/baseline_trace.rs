@@ -32,6 +32,7 @@ pub enum BaselineTraceEvent {
     Choose { task_id: u32 },
     Dispatch { task_id: u32 },
     Complete { task_id: u32 },
+    JoinTargetReady { task_id: u32 },
     Stutter,
 }
 
@@ -63,6 +64,7 @@ pub enum TaskTraceEvent {
     Dispatch { task_id: u32 },
     Sleep { task_id: u32 },
     JoinWait { waiter_task_id: u32, child_task_id: u32 },
+    JoinTargetReady { task_id: u32 },
     Complete { task_id: u32 },
 }
 
@@ -434,6 +436,9 @@ fn render_rocq_event(event: BaselineTraceEvent) -> String {
         BaselineTraceEvent::Choose { task_id } => format!("EvChoose 1 {task_id}"),
         BaselineTraceEvent::Dispatch { task_id } => format!("EvDispatch 1 {task_id}"),
         BaselineTraceEvent::Complete { task_id } => format!("EvComplete {task_id}"),
+        BaselineTraceEvent::JoinTargetReady { task_id } => {
+            format!("EvJoinTargetReady {task_id}")
+        }
         BaselineTraceEvent::Stutter => "EvStutter".to_string(),
     }
 }
@@ -523,6 +528,9 @@ fn render_trace_rows_event(
         BaselineTraceEvent::Choose { task_id } => ("Choose", Some(1), Some(task_id)),
         BaselineTraceEvent::Dispatch { task_id } => ("Dispatch", Some(1), Some(task_id)),
         BaselineTraceEvent::Complete { task_id } => ("Complete", Some(task_id), None),
+        BaselineTraceEvent::JoinTargetReady { task_id } => {
+            ("JoinTargetReady", Some(task_id), None)
+        }
         BaselineTraceEvent::Stutter => ("Stutter", None, None),
     }
 }
@@ -601,6 +609,7 @@ fn render_task_trace_kind(event: TaskTraceEvent) -> (&'static str, u32, Option<u
             waiter_task_id,
             child_task_id,
         } => ("JoinWait", waiter_task_id, Some(child_task_id)),
+        TaskTraceEvent::JoinTargetReady { task_id } => ("JoinTargetReady", task_id, None),
         TaskTraceEvent::Complete { task_id } => ("Complete", task_id, None),
     }
 }
@@ -714,6 +723,7 @@ fn event_name(event: BaselineTraceEvent) -> &'static str {
         BaselineTraceEvent::Choose { .. } => "EvChoose",
         BaselineTraceEvent::Dispatch { .. } => "EvDispatch",
         BaselineTraceEvent::Complete { .. } => "EvComplete",
+        BaselineTraceEvent::JoinTargetReady { .. } => "EvJoinTargetReady",
         BaselineTraceEvent::Stutter => "EvStutter",
     }
 }
@@ -1020,6 +1030,24 @@ mod tests {
             lines,
             vec!["Choose\t7\t-", "Dispatch\t7\t-", "Runnable\t42\t-"]
         );
+    }
+
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
+    ))]
+    #[test]
+    fn join_target_ready_renders_task_trace_row() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+
+        record_task_trace(TaskTraceEvent::JoinTargetReady { task_id: 42 });
+
+        let lines = render_task_trace_artifact_lines();
+        assert_eq!(lines, vec!["JoinTargetReady\t42\t-"]);
     }
 
     #[test]
