@@ -136,7 +136,7 @@ pub async fn run_sleep_wakeup() -> TaskResult {
 }
 
 #[cfg(feature = "generic_trace_vm")]
-const GENERIC_TRACE_SEED: u64 = 0x4d59_5df4_d0f3_3173;
+const DEFAULT_GENERIC_TRACE_SEED: u64 = 0x4d59_5df4_d0f3_3173;
 #[cfg(feature = "generic_trace_vm")]
 const MAX_TOTAL_TASKS: u8 = 8;
 #[cfg(feature = "generic_trace_vm")]
@@ -190,6 +190,30 @@ impl WorkloadRng {
     fn bool(&mut self) -> bool {
         self.next_u64() & 1 == 0
     }
+}
+
+#[cfg(feature = "generic_trace_vm")]
+fn parse_generic_trace_seed(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Some(hex) = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        raw.parse().ok()
+    }
+}
+
+#[cfg(feature = "generic_trace_vm")]
+fn generic_trace_seed() -> u64 {
+    option_env!("GENERIC_TRACE_SEED")
+        .and_then(parse_generic_trace_seed)
+        .unwrap_or(DEFAULT_GENERIC_TRACE_SEED)
 }
 
 #[cfg(feature = "generic_trace_vm")]
@@ -275,7 +299,7 @@ fn generic_worker(state: GenericWorkloadState) -> GenericWorkloadFuture {
 #[cfg(feature = "generic_trace_vm")]
 pub async fn run_generic_random() -> TaskResult {
     generic_worker(GenericWorkloadState {
-        seed: GENERIC_TRACE_SEED,
+        seed: generic_trace_seed(),
         depth: 0,
         remaining_descendants: MAX_TOTAL_TASKS - 1,
     })

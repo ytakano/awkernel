@@ -163,7 +163,7 @@ build-workload-trace-x86_64: FORCE
 		echo "unsupported WORKLOAD_SCENARIO: $(WORKLOAD_SCENARIO)"; \
 		exit 1; \
 	fi
-	$(MAKE) x86_64 RELEASE=1 OPT='--release --features $(WORKLOAD_TRACE_FEATURE)'
+	GENERIC_TRACE_SEED='$(GENERIC_TRACE_SEED)' $(MAKE) x86_64 RELEASE=1 OPT='--release --features $(WORKLOAD_TRACE_FEATURE)'
 
 $(X86ASM): FORCE
 	$(MAKE) -C $@
@@ -217,6 +217,7 @@ WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_TIMEOUT ?= 120s
 WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
 WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
+GENERIC_TRACE_SEED ?=
 WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup generic_random
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
