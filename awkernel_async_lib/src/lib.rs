@@ -213,7 +213,7 @@ where
 {
     let (tx, rx) = oneshot::channel();
 
-    let child_task_id = crate::task::spawn(
+    let spawned = crate::task::spawn_with_ids(
         name,
         async move {
             let result = future.await;
@@ -223,7 +223,17 @@ where
             Ok(())
         },
         sched_type,
+        None,
     );
 
-    JoinHandle::new(child_task_id, rx)
+    #[cfg(feature = "baseline_trace")]
+    {
+        JoinHandle::new(spawned.trace_task_id, rx)
+    }
+
+    #[cfg(not(feature = "baseline_trace"))]
+    {
+        let _ = spawned.runtime_task_id;
+        JoinHandle::new(rx)
+    }
 }

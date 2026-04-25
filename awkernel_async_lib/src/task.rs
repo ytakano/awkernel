@@ -568,7 +568,7 @@ impl Tasks {
         scheduler: &'static dyn Scheduler,
         scheduler_type: SchedulerType,
         dag_info: Option<DagInfo>,
-    ) -> u32 {
+    ) -> SpawnedTask {
         let mut id = self.candidate_id;
         loop {
             if id == 0 {
@@ -619,7 +619,11 @@ impl Tasks {
                 e.insert(Arc::new(task));
                 self.candidate_id = id;
 
-                return id;
+                return SpawnedTask {
+                    runtime_task_id: id,
+                    #[cfg(feature = "baseline_trace")]
+                    trace_task_id,
+                };
             } else {
                 // The candidate task ID is already used.
                 // Check next candidate.
@@ -641,6 +645,12 @@ impl Tasks {
     }
 }
 
+pub(crate) struct SpawnedTask {
+    pub runtime_task_id: u32,
+    #[cfg(feature = "baseline_trace")]
+    pub trace_task_id: u32,
+}
+
 /// Spawn a detached task.
 /// If you want to spawn tasks in non async functions,
 /// use this function.
@@ -660,7 +670,7 @@ pub fn spawn(
     future: impl Future<Output = TaskResult> + 'static + Send,
     sched_type: SchedulerType,
 ) -> u32 {
-    inner_spawn(name, future, sched_type, None)
+    spawn_with_ids(name, future, sched_type, None).runtime_task_id
 }
 
 /// Spawn a detached task with DAG information.
@@ -689,7 +699,7 @@ pub fn spawn_with_dag_info(
     sched_type: SchedulerType,
     dag_info: DagInfo,
 ) -> u32 {
-    inner_spawn(name, future, sched_type, Some(dag_info))
+    spawn_with_ids(name, future, sched_type, Some(dag_info)).runtime_task_id
 }
 
 pub fn inner_spawn(
@@ -698,6 +708,15 @@ pub fn inner_spawn(
     sched_type: SchedulerType,
     dag_info: Option<DagInfo>,
 ) -> u32 {
+    spawn_with_ids(name, future, sched_type, dag_info).runtime_task_id
+}
+
+pub(crate) fn spawn_with_ids(
+    name: Cow<'static, str>,
+    future: impl Future<Output = TaskResult> + 'static + Send,
+    sched_type: SchedulerType,
+    dag_info: Option<DagInfo>,
+) -> SpawnedTask {
     if let SchedulerType::PrioritizedFIFO(p) | SchedulerType::PrioritizedRR(p) = sched_type {
         if p > HIGHEST_PRIORITY {
             log::warn!(
@@ -714,19 +733,18 @@ pub fn inner_spawn(
 
     let mut node = MCSNode::new();
     let mut tasks = TASKS.lock(&mut node);
-    let id = tasks.spawn(name, future.fuse(), scheduler, sched_type, dag_info);
+    let spawned = tasks.spawn(name, future.fuse(), scheduler, sched_type, dag_info);
+    let id = spawned.runtime_task_id;
+    #[cfg(feature = "baseline_trace")]
+    let child_trace_task_id = spawned.trace_task_id;
     let task = tasks.id_to_task.get(&id).cloned();
     drop(tasks);
 
     #[cfg(feature = "baseline_trace")]
     {
-        let child_task_id = task
-            .as_ref()
-            .map(|task| trace_task_id_of_task(task))
-            .unwrap_or(id);
         record_workload_task_trace(TaskTraceEvent::Spawn {
             parent_task_id,
-            child_task_id,
+            child_task_id: child_trace_task_id,
         });
     }
 
@@ -734,7 +752,7 @@ pub fn inner_spawn(
         task.wake();
     }
 
-    id
+    spawned
 }
 
 /// Get the task ID currently running.
