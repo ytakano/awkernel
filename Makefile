@@ -195,21 +195,10 @@ QEMU_X86_2CPU_ARGS+= -machine q35
 QEMU_X86_2CPU_ARGS+= -serial stdio -monitor telnet::5556,server,nowait
 QEMU_X86_2CPU_ARGS+= -m 2G -smp 2
 
-BASELINE_TRACE_EXPECTED=fixtures/baseline_trace/faithful_2cpu.txt
 BASELINE_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_baseline.log
 BASELINE_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_baseline.log
-HANDOFF_TRACE_EXPECTED=fixtures/handoff_trace/faithful_2cpu.txt
-HANDOFF_TRACE_ROWS_EXPECTED=fixtures/handoff_trace/faithful_2cpu_rows.tsv
-HANDOFF_TRACE_ROCQ_EXPECTED=fixtures/handoff_trace/faithful_2cpu_rocq.v
 HANDOFF_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_handoff.log
 HANDOFF_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_handoff.log
-GHC ?= ghc
-GHCFLAGS ?= -O2
-ACCEPT_CHECKER_DIR ?= ../scheduling_theory/extracted/haskell
-HASKELL_ACCEPT_TARGET_DIR ?= target/haskell
-HANDOFF_ACCEPT_BIN ?= ${HASKELL_ACCEPT_TARGET_DIR}/handoff_acceptance
-HANDOFF_ACCEPT_RUNHASKELL ?= runhaskell
-HANDOFF_ACCEPT_RUNNER ?= scripts/haskell/HandoffAcceptanceMain.hs
 WORKLOAD_SCENARIO ?= single_async
 WORKLOAD_TRACE_FEATURE_single_async=single_async_trace_vm
 WORKLOAD_TRACE_FEATURE_nested_spawn=nested_spawn_trace_vm
@@ -220,9 +209,6 @@ WORKLOAD_TRACE_FEATURE=$(WORKLOAD_TRACE_FEATURE_$(WORKLOAD_SCENARIO))
 WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_TIMEOUT ?= 120s
-WORKLOAD_ACCEPT_BIN ?= ${HASKELL_ACCEPT_TARGET_DIR}/workload_acceptance
-WORKLOAD_ACCEPT_RUNHASKELL ?= runhaskell
-WORKLOAD_ACCEPT_RUNNER ?= scripts/haskell/WorkloadAcceptanceMain.hs
 GENERIC_TRACE_SEED ?=
 WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup generic_random
 
@@ -296,25 +282,10 @@ capture-baseline-log-kvm-2cpu: build-baseline-trace-x86_64
 
 capture-baseline-log-2cpu: capture-baseline-log-qemu-2cpu capture-baseline-log-kvm-2cpu
 
-check-baseline-trace-qemu-2cpu: capture-baseline-log-qemu-2cpu
-	python3 scripts/check_baseline_trace.py \
-		--backend qemu \
-		--expected ${BASELINE_TRACE_EXPECTED} \
-		--log ${BASELINE_TRACE_QEMU_LOG}
-
-check-baseline-trace-kvm-2cpu: capture-baseline-log-kvm-2cpu
-	python3 scripts/check_baseline_trace.py \
-		--backend kvm \
-		--expected ${BASELINE_TRACE_EXPECTED} \
-		--log ${BASELINE_TRACE_KVM_LOG}
-
-check-baseline-trace-2cpu: check-baseline-trace-qemu-2cpu check-baseline-trace-kvm-2cpu
-
-refresh-baseline-trace-fixture-qemu-2cpu: capture-baseline-log-qemu-2cpu
-	python3 scripts/extract_trace_artifact.py \
-		--mode baseline \
-		--log ${BASELINE_TRACE_QEMU_LOG} \
-		--output ${BASELINE_TRACE_EXPECTED}
+check-baseline-trace-qemu-2cpu check-baseline-trace-kvm-2cpu check-baseline-trace-2cpu refresh-baseline-trace-fixture-qemu-2cpu:
+	$(MAKE) -C .. $@ \
+		BASELINE_TRACE_QEMU_LOG=${BASELINE_TRACE_QEMU_LOG} \
+		BASELINE_TRACE_KVM_LOG=${BASELINE_TRACE_KVM_LOG}
 
 # Rebuild the image with handoff_trace_vm before each handoff capture run.
 capture-handoff-log-qemu-2cpu: build-handoff-trace-x86_64
@@ -340,79 +311,10 @@ capture-handoff-log-kvm-2cpu: build-handoff-trace-x86_64
 
 capture-handoff-log-2cpu: capture-handoff-log-qemu-2cpu capture-handoff-log-kvm-2cpu
 
-refresh-handoff-trace-fixtures-qemu-2cpu: capture-handoff-log-qemu-2cpu
-	python3 scripts/extract_trace_artifact.py \
-		--mode baseline \
-		--log ${HANDOFF_TRACE_QEMU_LOG} \
-		--output ${HANDOFF_TRACE_EXPECTED}
-	python3 scripts/extract_trace_artifact.py \
-		--mode block \
-		--begin BEGIN_TRACE_ROWS \
-		--end END_TRACE_ROWS \
-		--log ${HANDOFF_TRACE_QEMU_LOG} \
-		--output ${HANDOFF_TRACE_ROWS_EXPECTED}
-	python3 scripts/extract_trace_artifact.py \
-		--mode block \
-		--begin BEGIN_ROCQ_TRACE \
-		--end END_ROCQ_TRACE \
-		--log ${HANDOFF_TRACE_QEMU_LOG} \
-		--output ${HANDOFF_TRACE_ROCQ_EXPECTED}
-
-refresh-trace-fixtures-qemu-2cpu: refresh-baseline-trace-fixture-qemu-2cpu refresh-handoff-trace-fixtures-qemu-2cpu
-
-# Phase-2 completion requires both backends to pass the rows-only acceptance
-# gate and the artifact/regression gate over the same captured handoff log.
-check-handoff-trace-qemu-2cpu: capture-handoff-log-qemu-2cpu
-	python3 scripts/check_baseline_trace.py \
-		--backend qemu-handoff \
-		--expected ${HANDOFF_TRACE_EXPECTED} \
-		--log ${HANDOFF_TRACE_QEMU_LOG}
-	python3 scripts/check_rocq_trace_artifact.py \
-		--backend qemu-handoff \
-		--expected ${HANDOFF_TRACE_ROCQ_EXPECTED} \
-		--log ${HANDOFF_TRACE_QEMU_LOG}
-	python3 scripts/check_trace_rows_artifact.py \
-		--backend qemu-handoff \
-		--expected ${HANDOFF_TRACE_ROWS_EXPECTED} \
-		--log ${HANDOFF_TRACE_QEMU_LOG}
-
-check-handoff-trace-kvm-2cpu: capture-handoff-log-kvm-2cpu
-	python3 scripts/check_baseline_trace.py \
-		--backend kvm-handoff \
-		--expected ${HANDOFF_TRACE_EXPECTED} \
-		--log ${HANDOFF_TRACE_KVM_LOG}
-	python3 scripts/check_rocq_trace_artifact.py \
-		--backend kvm-handoff \
-		--expected ${HANDOFF_TRACE_ROCQ_EXPECTED} \
-		--log ${HANDOFF_TRACE_KVM_LOG}
-	python3 scripts/check_trace_rows_artifact.py \
-		--backend kvm-handoff \
-		--expected ${HANDOFF_TRACE_ROWS_EXPECTED} \
-		--log ${HANDOFF_TRACE_KVM_LOG}
-
-check-handoff-trace-2cpu: check-handoff-trace-qemu-2cpu check-handoff-trace-kvm-2cpu
-
-check-handoff-accept-qemu-2cpu: capture-handoff-log-qemu-2cpu ${HANDOFF_ACCEPT_BIN}
-	python3 scripts/check_handoff_acceptance.py \
-		--backend qemu-handoff \
-		--log ${HANDOFF_TRACE_QEMU_LOG} \
-		--checker-bin ${HANDOFF_ACCEPT_BIN}
-
-check-handoff-accept-kvm-2cpu: capture-handoff-log-kvm-2cpu ${HANDOFF_ACCEPT_BIN}
-	python3 scripts/check_handoff_acceptance.py \
-		--backend kvm-handoff \
-		--log ${HANDOFF_TRACE_KVM_LOG} \
-		--checker-bin ${HANDOFF_ACCEPT_BIN}
-
-check-handoff-accept-2cpu: check-handoff-accept-qemu-2cpu check-handoff-accept-kvm-2cpu
-
-${HANDOFF_ACCEPT_BIN}: ${HANDOFF_ACCEPT_RUNNER} ${ACCEPT_CHECKER_DIR}/AwkernelHandoffAcceptance.hs
-	mkdir -p ${HASKELL_ACCEPT_TARGET_DIR}/handoff-build
-	${GHC} ${GHCFLAGS} -i${ACCEPT_CHECKER_DIR} ${HANDOFF_ACCEPT_RUNNER} \
-		-outputdir ${HASKELL_ACCEPT_TARGET_DIR}/handoff-build \
-		-odir ${HASKELL_ACCEPT_TARGET_DIR}/handoff-build \
-		-hidir ${HASKELL_ACCEPT_TARGET_DIR}/handoff-build \
-		-o $@
+refresh-handoff-trace-fixtures-qemu-2cpu refresh-trace-fixtures-qemu-2cpu check-handoff-trace-qemu-2cpu check-handoff-trace-kvm-2cpu check-handoff-trace-2cpu check-handoff-accept-qemu-2cpu check-handoff-accept-kvm-2cpu check-handoff-accept-2cpu:
+	$(MAKE) -C .. $@ \
+		HANDOFF_TRACE_QEMU_LOG=${HANDOFF_TRACE_QEMU_LOG} \
+		HANDOFF_TRACE_KVM_LOG=${HANDOFF_TRACE_KVM_LOG}
 
 capture-workload-log-qemu-2cpu: build-workload-trace-x86_64
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
@@ -439,36 +341,13 @@ capture-workload-log-kvm-2cpu: build-workload-trace-x86_64
 		-serial chardev:workload_serial -monitor none \
 		-m 2G -smp 2 -nographic
 
-check-workload-accept-qemu-2cpu: capture-workload-log-qemu-2cpu ${WORKLOAD_ACCEPT_BIN}
-	python3 scripts/check_workload_acceptance.py \
-		--backend qemu-workload \
-		--scenario ${WORKLOAD_SCENARIO} \
-		--log ${WORKLOAD_TRACE_QEMU_LOG} \
-		--checker-bin ${WORKLOAD_ACCEPT_BIN}
-
-check-workload-accept-kvm-2cpu: capture-workload-log-kvm-2cpu ${WORKLOAD_ACCEPT_BIN}
-	python3 scripts/check_workload_acceptance.py \
-		--backend kvm-workload \
-		--scenario ${WORKLOAD_SCENARIO} \
-		--log ${WORKLOAD_TRACE_KVM_LOG} \
-		--checker-bin ${WORKLOAD_ACCEPT_BIN}
-
-${WORKLOAD_ACCEPT_BIN}: ${WORKLOAD_ACCEPT_RUNNER} ${ACCEPT_CHECKER_DIR}/AwkernelWorkloadAcceptance.hs
-	mkdir -p ${HASKELL_ACCEPT_TARGET_DIR}/workload-build
-	${GHC} ${GHCFLAGS} -i${ACCEPT_CHECKER_DIR} ${WORKLOAD_ACCEPT_RUNNER} \
-		-outputdir ${HASKELL_ACCEPT_TARGET_DIR}/workload-build \
-		-odir ${HASKELL_ACCEPT_TARGET_DIR}/workload-build \
-		-hidir ${HASKELL_ACCEPT_TARGET_DIR}/workload-build \
-		-o $@
-
-check-workload-accept-2cpu-all:
-	@for scenario in $(WORKLOAD_SCENARIOS); do \
-		$(MAKE) check-workload-accept-qemu-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
-		$(MAKE) check-workload-accept-kvm-2cpu WORKLOAD_SCENARIO=$$scenario || exit $$?; \
-	done
-
-check-workload-accept-contract:
-	python3 -m unittest discover -s tests -p 'test_workload_acceptance_contract.py' -v
+check-workload-accept-qemu-2cpu check-workload-accept-kvm-2cpu check-workload-accept-2cpu-all check-workload-accept-contract check-generic-random-workload-seeds:
+	$(MAKE) -C .. $@ \
+		WORKLOAD_SCENARIO=${WORKLOAD_SCENARIO} \
+		WORKLOAD_TRACE_QEMU_LOG=${WORKLOAD_TRACE_QEMU_LOG} \
+		WORKLOAD_TRACE_KVM_LOG=${WORKLOAD_TRACE_KVM_LOG} \
+		WORKLOAD_TRACE_TIMEOUT=${WORKLOAD_TRACE_TIMEOUT} \
+		GENERIC_TRACE_SEED=${GENERIC_TRACE_SEED}
 
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
