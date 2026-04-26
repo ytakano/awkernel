@@ -12,6 +12,15 @@ def load_lines(path: pathlib.Path) -> list[str]:
 
 
 def extract_trace(lines: list[str]) -> list[str]:
+    overflow_lines = [
+        index + 1 for index, line in enumerate(lines) if line.strip() == "BASELINE_TRACE_OVERFLOW"
+    ]
+    if overflow_lines:
+        raise SystemExit(
+            "baseline trace overflowed; emitted trace artifact is incomplete "
+            f"(marker at log line {overflow_lines[0]})"
+        )
+
     extracted = [line.rstrip() for line in lines if line.startswith("BASELINE_TRACE:")]
     done_markers = [line.rstrip() for line in lines if line.strip() == "BASELINE_TRACE_DONE"]
 

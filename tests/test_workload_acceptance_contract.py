@@ -198,6 +198,33 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         self.assertIsNone(payload["log_line_end"])
         self.assertIn("rejected", stderr)
 
+    def test_baseline_trace_overflow_reports_wrapper_failure(self) -> None:
+        code, payload, stdout, stderr = self.run_wrapper(
+            log_text="\n".join(
+                [
+                    "boot",
+                    "BASELINE_TRACE_OVERFLOW",
+                    "BEGIN_SCHED_TRACE",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "", "true", "-"),
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "Spawn\t1\t-",
+                    "Runnable\t1\t-",
+                    "Complete\t1\t-",
+                    "END_TASK_TRACE",
+                ]
+            )
+        )
+        self.assertEqual(code, WRAPPER_FAILURE_EXIT)
+        self.assert_single_json_stdout(stdout)
+        self.assert_common_failure(payload, kind="baseline-trace-overflow")
+        self.assertIsNone(payload["sched_trace_index"])
+        self.assertIsNone(payload["task_trace_index"])
+        self.assertEqual(payload["log_line_begin"], 2)
+        self.assertEqual(payload["log_line_end"], 2)
+        self.assertIn("rejected", stderr)
+
     def test_empty_sched_trace_block_reports_line_span(self) -> None:
         code, payload, stdout, _ = self.run_wrapper(
             log_text="\n".join(

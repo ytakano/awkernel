@@ -82,7 +82,7 @@ pub(crate) struct SchedAndTaskDispatchTraceRecord {
     task_dispatch: Option<TaskTraceRecord>,
 }
 
-const TRACE_CAPACITY: usize = 128;
+const TRACE_CAPACITY: usize = 4096;
 const LIFECYCLE_TRACE_CAPACITY: usize = 512;
 
 struct TraceBuffer {

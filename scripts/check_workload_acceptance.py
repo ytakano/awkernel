@@ -17,6 +17,7 @@ SCHED_TRACE_BEGIN = "BEGIN_SCHED_TRACE"
 SCHED_TRACE_END = "END_SCHED_TRACE"
 TASK_TRACE_BEGIN = "BEGIN_TASK_TRACE"
 TASK_TRACE_END = "END_TASK_TRACE"
+BASELINE_TRACE_OVERFLOW = "BASELINE_TRACE_OVERFLOW"
 
 WRAPPER_FAILURE_EXIT = 2
 RUNNER_FAILURE_EXIT = 1
@@ -59,6 +60,21 @@ def load_lines(path: pathlib.Path) -> list[str]:
             "log-read-failure",
             f"failed to read serial log {path}: {exc}",
         ) from exc
+
+
+def reject_if_trace_overflowed(lines: list[str]) -> None:
+    overflow_lines = [
+        index + 1 for index, line in enumerate(lines) if line.strip() == BASELINE_TRACE_OVERFLOW
+    ]
+    if not overflow_lines:
+        return
+
+    raise AcceptanceError(
+        "baseline-trace-overflow",
+        "baseline trace overflowed; emitted trace artifacts are incomplete",
+        log_line_begin=overflow_lines[0],
+        log_line_end=overflow_lines[-1],
+    )
 
 
 def extract_block(
@@ -334,6 +350,7 @@ def main() -> int:
             raise AcceptanceError("runner-not-found", f"Haskell runner not found: {args.runner}")
         checker_dir = resolve_checker_dir(args.checker_dir)
         lines = load_lines(args.log)
+        reject_if_trace_overflowed(lines)
         sched_trace, sched_trace_start_line, _ = extract_block(
             lines,
             SCHED_TRACE_BEGIN,
