@@ -58,6 +58,14 @@ def resolve_runhaskell(command: str) -> str:
     return resolved
 
 
+def resolve_checker_bin(path: pathlib.Path) -> str:
+    if not path.is_file():
+        raise AcceptanceError(f"Haskell checker binary not found: {path}")
+    if not os.access(path, os.X_OK):
+        raise AcceptanceError(f"Haskell checker binary is not executable: {path}")
+    return str(path)
+
+
 def candidate_checker_dirs() -> list[pathlib.Path]:
     env_candidates = [
         os.environ.get("HANDOFF_ACCEPT_CHECKER_DIR"),
@@ -117,32 +125,43 @@ def main() -> int:
     parser.add_argument(
         "--runner",
         type=pathlib.Path,
-        required=True,
-        help="Path to the Haskell phase-2 acceptance runner.",
+        default=pathlib.Path("scripts/haskell/HandoffAcceptanceMain.hs"),
+        help="Path to the Haskell phase-2 acceptance runner used by the runhaskell fallback.",
     )
     parser.add_argument(
         "--checker-dir",
         type=pathlib.Path,
         help="Directory containing the extracted AwkernelHandoffAcceptance module for the phase-2 gate.",
     )
+    parser.add_argument("--checker-bin", type=pathlib.Path, help="Native handoff acceptance checker binary.")
     args = parser.parse_args()
 
     try:
-        runhaskell = resolve_runhaskell(args.runhaskell)
-        if not args.runner.is_file():
-            raise AcceptanceError(f"Haskell runner not found: {args.runner}")
-        checker_dir = resolve_checker_dir(args.checker_dir)
+        checker_bin = resolve_checker_bin(args.checker_bin) if args.checker_bin is not None else None
+        runhaskell = None
+        checker_dir = None
+        if checker_bin is None:
+            runhaskell = resolve_runhaskell(args.runhaskell)
+            if not args.runner.is_file():
+                raise AcceptanceError(f"Haskell runner not found: {args.runner}")
+            checker_dir = resolve_checker_dir(args.checker_dir)
         rows = extract_trace_rows_block(load_lines(args.log))
     except AcceptanceError as exc:
         raise SystemExit(f"{args.backend}: {exc}") from exc
 
     payload = "\n".join(rows) + "\n"
-    cmd = [
-        runhaskell,
-        f"-i{checker_dir}",
-        str(args.runner),
-        args.backend,
-    ]
+    if checker_bin is not None:
+        cmd = [
+            checker_bin,
+            args.backend,
+        ]
+    else:
+        cmd = [
+            runhaskell,
+            f"-i{checker_dir}",
+            str(args.runner),
+            args.backend,
+        ]
     result = subprocess.run(cmd, input=payload, text=True, capture_output=True)
     if result.stdout:
         print(result.stdout, end="")

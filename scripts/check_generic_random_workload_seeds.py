@@ -104,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="scripts/haskell/WorkloadAcceptanceMain.hs",
         help="Haskell workload checker runner, default scripts/haskell/WorkloadAcceptanceMain.hs",
     )
+    parser.add_argument(
+        "--checker-bin",
+        help="Native workload acceptance checker binary passed to the workload checker wrapper.",
+    )
     return parser
 
 
@@ -210,11 +214,11 @@ def check_log(args: argparse.Namespace, log_path: Path) -> int:
         "generic_random",
         "--log",
         str(log_path),
-        "--runhaskell",
-        args.runhaskell,
-        "--runner",
-        args.runner,
     ]
+    if args.checker_bin:
+        command.extend(["--checker-bin", args.checker_bin])
+    else:
+        command.extend(["--runhaskell", args.runhaskell, "--runner", args.runner])
     return subprocess.run(command, cwd=repo_root()).returncode
 
 

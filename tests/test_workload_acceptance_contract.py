@@ -71,7 +71,8 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         tmpdir = tempfile.TemporaryDirectory(prefix="workload-accept-runner-")
         self.addCleanup(tmpdir.cleanup)
         runner_path = pathlib.Path(tmpdir.name) / "fake_runner.py"
-        runner_path.write_text("import sys\n" + body + "\n", encoding="utf-8")
+        runner_path.write_text("#!/usr/bin/env python3\nimport sys\n" + body + "\n", encoding="utf-8")
+        runner_path.chmod(0o755)
         return runner_path
 
     @staticmethod
@@ -136,6 +137,7 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         runhaskell: str | None = None,
         runner: pathlib.Path | None = None,
         checker_dir: pathlib.Path | None = None,
+        checker_bin: pathlib.Path | None = None,
     ) -> tuple[int, dict[str, object], str, str]:
         log_path = self.make_log(log_text)
         cmd = [
@@ -154,6 +156,8 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
             "--checker-dir",
             str(checker_dir or self.make_dummy_checker_dir()),
         ]
+        if checker_bin is not None:
+            cmd.extend(["--checker-bin", str(checker_bin)])
         result = subprocess.run(cmd, text=True, capture_output=True, cwd=self.awkernel_root)
         stdout_lines = [line for line in result.stdout.splitlines() if line.strip()]
         self.assertEqual(len(stdout_lines), 1, msg=f"stdout must contain exactly one JSON payload line: {result.stdout!r}")
@@ -344,6 +348,56 @@ class WorkloadAcceptanceContractTest(unittest.TestCase):
         self.assert_common_failure(payload, kind="missing-sched-trace-block")
         self.assertEqual(payload["log_line_begin"], 2)
         self.assertEqual(payload["log_line_end"], 1)
+
+    def test_native_checker_bin_success_is_accepted(self) -> None:
+        fake_checker = self.make_runner_script(
+            "assert sys.argv[1:3] == ['test-backend', 'test-scenario']\n"
+            "assert len(sys.argv) == 5\n"
+            "print('{\"accepted\": true, \"backend\": \"test-backend\", \"scenario\": \"test-scenario\", "
+            "\\\"kind\\\": \\\"accepted\\\", \\\"message\\\": \\\"ok\\\", \\\"sched_trace_index\\\": null, "
+            "\\\"task_trace_index\\\": null, \\\"log_line_begin\\\": null, \\\"log_line_end\\\": null}')\n"
+        )
+        fake_checker.chmod(0o755)
+        code, payload, stdout, stderr = self.run_wrapper(
+            log_text="\n".join(
+                [
+                    "BEGIN_SCHED_TRACE",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    self.make_sched_trace_row(1, "Complete", "1", "-", "-", "", "true", "-"),
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "Spawn\t1\t-",
+                    "Runnable\t1\t-",
+                    "Complete\t1\t-",
+                    "END_TASK_TRACE",
+                ]
+            ),
+            checker_bin=fake_checker,
+        )
+        self.assertEqual(code, ACCEPTED_EXIT)
+        self.assert_single_json_stdout(stdout)
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["kind"], "accepted")
+        self.assertIn("accepted", stderr)
+
+    def test_missing_native_checker_bin_reports_wrapper_failure(self) -> None:
+        missing_checker = pathlib.Path("/tmp/awkernel-workload-accept-missing-checker")
+        code, payload, stdout, _ = self.run_wrapper(
+            log_text="\n".join(
+                [
+                    "BEGIN_SCHED_TRACE",
+                    self.make_sched_trace_row(0, "Wakeup", "1", "-", "-", "1", "false", "-"),
+                    "END_SCHED_TRACE",
+                    "BEGIN_TASK_TRACE",
+                    "Spawn\t1\t-",
+                    "END_TASK_TRACE",
+                ]
+            ),
+            checker_bin=missing_checker,
+        )
+        self.assertEqual(code, WRAPPER_FAILURE_EXIT)
+        self.assert_single_json_stdout(stdout)
+        self.assert_common_failure(payload, kind="checker-bin-not-found")
 
     def test_runner_extra_stdout_before_json_is_rejected(self) -> None:
         fake_runner = self.make_runner_script(

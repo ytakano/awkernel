@@ -138,6 +138,14 @@ def resolve_runhaskell(command: str) -> str:
     return resolved
 
 
+def resolve_checker_bin(path: pathlib.Path) -> str:
+    if not path.is_file():
+        raise AcceptanceError("checker-bin-not-found", f"Haskell checker binary not found: {path}")
+    if not os.access(path, os.X_OK):
+        raise AcceptanceError("checker-bin-not-executable", f"Haskell checker binary is not executable: {path}")
+    return str(path)
+
+
 def candidate_checker_dirs() -> list[pathlib.Path]:
     env_candidates = [
         os.environ.get("WORKLOAD_ACCEPT_CHECKER_DIR"),
@@ -340,15 +348,25 @@ def main() -> int:
     parser.add_argument("--backend", default="backend", help="Backend label for diagnostics.")
     parser.add_argument("--scenario", help="Optional runtime workload label for diagnostics.")
     parser.add_argument("--runhaskell", default="runhaskell", help="Path or command name for runhaskell.")
-    parser.add_argument("--runner", type=pathlib.Path, required=True, help="Path to the Haskell workload acceptance runner.")
+    parser.add_argument(
+        "--runner",
+        type=pathlib.Path,
+        default=pathlib.Path("scripts/haskell/WorkloadAcceptanceMain.hs"),
+        help="Path to the Haskell workload acceptance runner used by the runhaskell fallback.",
+    )
     parser.add_argument("--checker-dir", type=pathlib.Path, help="Directory containing the extracted AwkernelWorkloadAcceptance module.")
+    parser.add_argument("--checker-bin", type=pathlib.Path, help="Native workload acceptance checker binary.")
     args = parser.parse_args()
 
     try:
-        runhaskell = resolve_runhaskell(args.runhaskell)
-        if not args.runner.is_file():
-            raise AcceptanceError("runner-not-found", f"Haskell runner not found: {args.runner}")
-        checker_dir = resolve_checker_dir(args.checker_dir)
+        checker_bin = resolve_checker_bin(args.checker_bin) if args.checker_bin is not None else None
+        runhaskell = None
+        checker_dir = None
+        if checker_bin is None:
+            runhaskell = resolve_runhaskell(args.runhaskell)
+            if not args.runner.is_file():
+                raise AcceptanceError("runner-not-found", f"Haskell runner not found: {args.runner}")
+            checker_dir = resolve_checker_dir(args.checker_dir)
         lines = load_lines(args.log)
         reject_if_trace_overflowed(lines)
         sched_trace, sched_trace_start_line, _ = extract_block(
@@ -386,15 +404,24 @@ def main() -> int:
         sched_trace_path.write_text("\n".join(sched_trace) + "\n", encoding="utf-8")
         task_trace_path.write_text("\n".join(task_trace) + "\n", encoding="utf-8")
 
-        cmd = [
-            runhaskell,
-            f"-i{checker_dir}",
-            str(args.runner),
-            args.backend,
-            args.scenario or "-",
-            str(sched_trace_path),
-            str(task_trace_path),
-        ]
+        if checker_bin is not None:
+            cmd = [
+                checker_bin,
+                args.backend,
+                args.scenario or "-",
+                str(sched_trace_path),
+                str(task_trace_path),
+            ]
+        else:
+            cmd = [
+                runhaskell,
+                f"-i{checker_dir}",
+                str(args.runner),
+                args.backend,
+                args.scenario or "-",
+                str(sched_trace_path),
+                str(task_trace_path),
+            ]
         result = subprocess.run(cmd, text=True, capture_output=True)
 
         try:

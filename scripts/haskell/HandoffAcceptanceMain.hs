@@ -62,8 +62,12 @@ rowFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, ne
   needResched <- boolFromField needReschedField
   dispatch <- optionNatFromField dispatchField
   pure (A.MkAwkernelCapturedRow cpu event current runnable needResched dispatch)
+rowFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField, _candidatePrefixCsv] =
+  rowFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField]
+rowFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField, _workerCurrentCsv, _workerNeedReschedCsv, _workerDispatchCsv] =
+  rowFromFields [cpuField, eventTag, eventA, eventB, currentField, runnableCsv, needReschedField, dispatchField]
 rowFromFields fields =
-  Left ("expected 8 TSV columns, got " ++ show (length fields) ++ " from " ++ show fields)
+  Left ("expected 8, 9, or 11 TSV columns, got " ++ show (length fields) ++ " from " ++ show fields)
 
 rowsFromLines :: [String] -> Either String (A.List A.AwkernelCapturedRow)
 rowsFromLines [] = Right A.Nil
