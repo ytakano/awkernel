@@ -72,8 +72,14 @@ pub enum TaskTraceEvent {
     Dispatch {
         task_id: u32,
     },
-    Sleep {
+    Block {
         task_id: u32,
+        wait_class: WaitClass,
+    },
+    Unblock {
+        task_id: u32,
+        wait_class: WaitClass,
+        unblock_kind: UnblockKind,
     },
     JoinWait {
         waiter_task_id: u32,
@@ -85,6 +91,18 @@ pub enum TaskTraceEvent {
     Complete {
         task_id: u32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitClass {
+    Sleep,
+    Io,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnblockKind {
+    Ready,
+    Timeout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -460,7 +478,8 @@ fn render_trace_rows_runnable(values: &[u32]) -> String {
 fn render_trace_rows_record(record: BaselineTraceRecord) -> String {
     let (event_tag, arg0, arg1) = render_trace_rows_event(record.event);
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        record.event_id,
         record.snapshot.cpu_id,
         event_tag,
         render_trace_rows_option(arg0),
@@ -486,32 +505,73 @@ pub fn render_trace_rows_artifact_lines() -> Vec<String> {
         .collect()
 }
 
-fn render_task_trace_kind(event: TaskTraceEvent) -> (&'static str, u32, Option<u32>) {
+fn render_wait_class(wait_class: WaitClass) -> &'static str {
+    match wait_class {
+        WaitClass::Sleep => "Sleep",
+        WaitClass::Io => "Io",
+    }
+}
+
+fn render_unblock_kind(unblock_kind: UnblockKind) -> &'static str {
+    match unblock_kind {
+        UnblockKind::Ready => "Ready",
+        UnblockKind::Timeout => "Timeout",
+    }
+}
+
+fn render_task_trace_kind(
+    event: TaskTraceEvent,
+) -> (
+    &'static str,
+    u32,
+    Option<u32>,
+    Option<WaitClass>,
+    Option<UnblockKind>,
+) {
     match event {
         TaskTraceEvent::Spawn {
             parent_task_id,
             child_task_id,
-        } => ("Spawn", child_task_id, parent_task_id),
-        TaskTraceEvent::Runnable { task_id } => ("Runnable", task_id, None),
-        TaskTraceEvent::Choose { task_id } => ("Choose", task_id, None),
-        TaskTraceEvent::Dispatch { task_id } => ("Dispatch", task_id, None),
-        TaskTraceEvent::Sleep { task_id } => ("Sleep", task_id, None),
+        } => ("Spawn", child_task_id, parent_task_id, None, None),
+        TaskTraceEvent::Runnable { task_id } => ("Runnable", task_id, None, None, None),
+        TaskTraceEvent::Choose { task_id } => ("Choose", task_id, None, None, None),
+        TaskTraceEvent::Dispatch { task_id } => ("Dispatch", task_id, None, None, None),
+        TaskTraceEvent::Block {
+            task_id,
+            wait_class,
+        } => ("Block", task_id, None, Some(wait_class), None),
+        TaskTraceEvent::Unblock {
+            task_id,
+            wait_class,
+            unblock_kind,
+        } => (
+            "Unblock",
+            task_id,
+            None,
+            Some(wait_class),
+            Some(unblock_kind),
+        ),
         TaskTraceEvent::JoinWait {
             waiter_task_id,
             child_task_id,
-        } => ("JoinWait", waiter_task_id, Some(child_task_id)),
-        TaskTraceEvent::JoinTargetReady { task_id } => ("JoinTargetReady", task_id, None),
-        TaskTraceEvent::Complete { task_id } => ("Complete", task_id, None),
+        } => ("JoinWait", waiter_task_id, Some(child_task_id), None, None),
+        TaskTraceEvent::JoinTargetReady { task_id } => {
+            ("JoinTargetReady", task_id, None, None, None)
+        }
+        TaskTraceEvent::Complete { task_id } => ("Complete", task_id, None, None, None),
     }
 }
 
 fn render_task_trace_record(record: TaskTraceRecord) -> String {
-    let (kind, subject, related) = render_task_trace_kind(record.event);
+    let (kind, subject, related, wait_class, unblock_kind) = render_task_trace_kind(record.event);
     format!(
-        "{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}",
+        record.event_id,
         kind,
         subject,
-        render_trace_rows_option(related)
+        render_trace_rows_option(related),
+        wait_class.map(render_wait_class).unwrap_or("-"),
+        unblock_kind.map(render_unblock_kind).unwrap_or("-")
     )
 }
 
@@ -691,8 +751,8 @@ mod tests {
 
         let lines = render_trace_rows_artifact_lines();
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "1\tChoose\t1\t1\t-\t1\ttrue\t1\t-\ttrue\t1");
-        assert_eq!(lines[1], "1\tDispatch\t1\t1\t1\t\tfalse\t-\t1\tfalse\t-");
+        assert_eq!(lines[0], "0\t1\tChoose\t1\t1\t-\t1\ttrue\t1\t-\ttrue\t1");
+        assert_eq!(lines[1], "1\t1\tDispatch\t1\t1\t1\t\tfalse\t-\t1\tfalse\t-");
     }
 
     #[test]
@@ -748,9 +808,9 @@ mod tests {
 
         let lines = render_trace_rows_artifact_lines();
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "0\tChoose\t1\t7\t-\t7\ttrue\t7\t-\ttrue\t7");
-        assert_eq!(lines[1], "0\tDispatch\t1\t7\t7\t\tfalse\t-\t7\tfalse\t-");
-        assert_eq!(lines[2], "1\tComplete\t42\t-\t-\t\ttrue\t-\t-\ttrue\t-");
+        assert_eq!(lines[0], "0\t0\tChoose\t1\t7\t-\t7\ttrue\t7\t-\ttrue\t7");
+        assert_eq!(lines[1], "1\t0\tDispatch\t1\t7\t7\t\tfalse\t-\t7\tfalse\t-");
+        assert_eq!(lines[2], "2\t1\tComplete\t42\t-\t-\t\ttrue\t-\t-\ttrue\t-");
     }
 
     #[test]
@@ -798,7 +858,11 @@ mod tests {
         let lines = render_task_trace_artifact_lines();
         assert_eq!(
             lines,
-            vec!["Choose\t7\t-", "Dispatch\t7\t-", "Runnable\t42\t-"]
+            vec![
+                "0\tChoose\t7\t-\t-\t-",
+                "1\tDispatch\t7\t-\t-\t-",
+                "2\tRunnable\t42\t-\t-\t-"
+            ]
         );
     }
 
@@ -811,7 +875,33 @@ mod tests {
         record_task_trace(TaskTraceEvent::JoinTargetReady { task_id: 42 });
 
         let lines = render_task_trace_artifact_lines();
-        assert_eq!(lines, vec!["JoinTargetReady\t42\t-"]);
+        assert_eq!(lines, vec!["0\tJoinTargetReady\t42\t-\t-\t-"]);
+    }
+
+    #[test]
+    fn block_and_unblock_render_wait_metadata() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        set_workload_artifact_enabled(true);
+
+        record_task_trace(TaskTraceEvent::Block {
+            task_id: 42,
+            wait_class: WaitClass::Sleep,
+        });
+        record_task_trace(TaskTraceEvent::Unblock {
+            task_id: 42,
+            wait_class: WaitClass::Io,
+            unblock_kind: UnblockKind::Timeout,
+        });
+
+        let lines = render_task_trace_artifact_lines();
+        assert_eq!(
+            lines,
+            vec![
+                "0\tBlock\t42\t-\tSleep\t-",
+                "1\tUnblock\t42\t-\tIo\tTimeout"
+            ]
+        );
     }
 
     #[test]

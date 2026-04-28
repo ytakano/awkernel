@@ -3,7 +3,10 @@
 use super::Cancel;
 use crate::scheduler;
 #[cfg(feature = "baseline_trace")]
-use crate::{baseline_trace, task};
+use crate::{
+    baseline_trace::{UnblockKind, WaitClass},
+    task,
+};
 use alloc::sync::Arc;
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
 use core::{task::Poll, time::Duration};
@@ -16,6 +19,8 @@ use alloc::boxed::Box;
 pub struct Sleep {
     state: Arc<Mutex<State>>,
     dur: Duration,
+    #[cfg(feature = "baseline_trace")]
+    trace_blocking: bool,
 }
 
 #[derive(Debug)]
@@ -47,12 +52,11 @@ impl Future for Sleep {
                 *guard = State::Wait;
 
                 #[cfg(feature = "baseline_trace")]
-                if let Some(task_id) = task::get_current_trace_task_id(awkernel_lib::cpu::cpu_id())
-                {
-                    baseline_trace::record_task_trace(baseline_trace::TaskTraceEvent::Sleep {
-                        task_id,
-                    });
-                }
+                let blocked_task_id = if self.trace_blocking {
+                    task::record_current_task_block(WaitClass::Sleep)
+                } else {
+                    None
+                };
 
                 // Invoke `sleep_handler` after `self.dur` time.
                 scheduler::sleep_task(
@@ -61,6 +65,14 @@ impl Future for Sleep {
                         let mut guard = state.lock(&mut node);
                         if let State::Wait = &*guard {
                             *guard = State::Finished;
+                            #[cfg(feature = "baseline_trace")]
+                            if let Some(task_id) = blocked_task_id {
+                                task::record_task_unblock(
+                                    task_id,
+                                    WaitClass::Sleep,
+                                    UnblockKind::Timeout,
+                                );
+                            }
                             waker.wake();
                         }
                     }),
@@ -92,7 +104,22 @@ impl Sleep {
     // Create a `Sleep`.
     pub(super) fn new(dur: Duration) -> Self {
         let state = Arc::new(Mutex::new(State::Ready));
-        Self { state, dur }
+        Self {
+            state,
+            dur,
+            #[cfg(feature = "baseline_trace")]
+            trace_blocking: true,
+        }
+    }
+
+    pub(super) fn new_untraced(dur: Duration) -> Self {
+        let state = Arc::new(Mutex::new(State::Ready));
+        Self {
+            state,
+            dur,
+            #[cfg(feature = "baseline_trace")]
+            trace_blocking: false,
+        }
     }
 }
 

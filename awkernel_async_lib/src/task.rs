@@ -41,7 +41,7 @@ use crate::baseline_trace::{
 };
 
 #[cfg(feature = "baseline_trace")]
-use crate::baseline_trace::TaskTraceEvent;
+use crate::baseline_trace::{TaskTraceEvent, UnblockKind, WaitClass};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -137,6 +137,35 @@ fn baseline_current_task_id(cpu_id: usize) -> Option<u32> {
 #[cfg(feature = "baseline_trace")]
 pub(crate) fn get_current_trace_task_id(cpu_id: usize) -> Option<u32> {
     baseline_current_task_id(cpu_id)
+}
+
+#[cfg(feature = "baseline_trace")]
+pub(crate) fn record_current_task_block(wait_class: WaitClass) -> Option<u32> {
+    let task_id = get_current_trace_task_id(awkernel_lib::cpu::cpu_id())?;
+    record_workload_task_trace(TaskTraceEvent::Block {
+        task_id,
+        wait_class,
+    });
+    Some(task_id)
+}
+
+#[cfg(feature = "baseline_trace")]
+pub(crate) fn record_task_unblock(task_id: u32, wait_class: WaitClass, unblock_kind: UnblockKind) {
+    record_workload_task_trace(TaskTraceEvent::Unblock {
+        task_id,
+        wait_class,
+        unblock_kind,
+    });
+}
+
+#[cfg(feature = "baseline_trace")]
+pub(crate) fn record_current_task_unblock(
+    wait_class: WaitClass,
+    unblock_kind: UnblockKind,
+) -> Option<u32> {
+    let task_id = get_current_trace_task_id(awkernel_lib::cpu::cpu_id())?;
+    record_task_unblock(task_id, wait_class, unblock_kind);
+    Some(task_id)
 }
 
 #[cfg(feature = "baseline_trace")]

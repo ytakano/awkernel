@@ -167,6 +167,18 @@ where
     timeout_call::Timeout::new(duration, future).await
 }
 
+/// Do the I/O `future` with a timeout.
+///
+/// This has the same return semantics as [`timeout`]. With `baseline_trace`
+/// enabled, timeout expiry is additionally projected as an I/O unblock caused
+/// by timeout.
+pub async fn timeout_io<F, T>(duration: Duration, future: F) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    timeout_call::Timeout::new_io(duration, future).await
+}
+
 /// Wait forever. Never return.
 ///
 /// # Example

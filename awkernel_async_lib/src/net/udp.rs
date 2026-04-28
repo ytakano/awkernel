@@ -1,6 +1,11 @@
 use core::net::Ipv4Addr;
 
 use super::IpAddr;
+#[cfg(feature = "baseline_trace")]
+use crate::{
+    baseline_trace::{UnblockKind, WaitClass},
+    task,
+};
 use awkernel_lib::net::{udp_socket::SockUdp, NetManagerError};
 use futures::Future;
 use pin_project::pin_project;
@@ -90,6 +95,7 @@ impl UdpSocket {
             data,
             dst_addr,
             dst_port,
+            blocked_task_id: None,
         }
         .await
     }
@@ -101,7 +107,12 @@ impl UdpSocket {
     /// the data is truncated to the length of the buffer.
     #[inline(always)]
     pub async fn recv(&mut self, buf: &mut [u8]) -> Result<(usize, IpAddr, u16), UdpSocketError> {
-        UdpReceiver { socket: self, buf }.await
+        UdpReceiver {
+            socket: self,
+            buf,
+            blocked_task_id: None,
+        }
+        .await
     }
 
     /// Join a multicast group.
@@ -153,6 +164,7 @@ pub struct UdpSender<'a> {
     data: &'a [u8],
     dst_addr: &'a IpAddr,
     dst_port: u16,
+    blocked_task_id: Option<u32>,
 }
 
 impl Future for UdpSender<'_> {
@@ -169,12 +181,22 @@ impl Future for UdpSender<'_> {
             *this.dst_port,
             cx.waker(),
         ) {
-            Ok(true) => core::task::Poll::Ready(Ok(())),
-            Ok(false) => core::task::Poll::Pending,
+            Ok(true) => {
+                record_io_ready(this.blocked_task_id);
+                core::task::Poll::Ready(Ok(()))
+            }
+            Ok(false) => {
+                record_io_block(this.blocked_task_id);
+                core::task::Poll::Pending
+            }
             Err(NetManagerError::InterfaceIsNotReady) => {
+                record_io_ready(this.blocked_task_id);
                 core::task::Poll::Ready(Err(UdpSocketError::InterfaceIsNotReady))
             }
-            Err(_) => core::task::Poll::Ready(Err(UdpSocketError::SendError)),
+            Err(_) => {
+                record_io_ready(this.blocked_task_id);
+                core::task::Poll::Ready(Err(UdpSocketError::SendError))
+            }
         }
     }
 }
@@ -183,6 +205,7 @@ impl Future for UdpSender<'_> {
 pub struct UdpReceiver<'a> {
     socket: &'a mut UdpSocket,
     buf: &'a mut [u8],
+    blocked_task_id: Option<u32>,
 }
 
 impl Future for UdpReceiver<'_> {
@@ -196,9 +219,38 @@ impl Future for UdpReceiver<'_> {
         let (socket, buf) = (this.socket, this.buf);
 
         match socket.socket_handle.recv(buf, cx.waker()) {
-            Ok(Some(result)) => core::task::Poll::Ready(Ok(result)),
-            Ok(None) => core::task::Poll::Pending,
-            Err(_) => core::task::Poll::Ready(Err(UdpSocketError::SendError)),
+            Ok(Some(result)) => {
+                record_io_ready(this.blocked_task_id);
+                core::task::Poll::Ready(Ok(result))
+            }
+            Ok(None) => {
+                record_io_block(this.blocked_task_id);
+                core::task::Poll::Pending
+            }
+            Err(_) => {
+                record_io_ready(this.blocked_task_id);
+                core::task::Poll::Ready(Err(UdpSocketError::SendError))
+            }
         }
     }
 }
+
+#[cfg(feature = "baseline_trace")]
+fn record_io_block(blocked_task_id: &mut Option<u32>) {
+    if blocked_task_id.is_none() {
+        *blocked_task_id = task::record_current_task_block(WaitClass::Io);
+    }
+}
+
+#[cfg(not(feature = "baseline_trace"))]
+fn record_io_block(_blocked_task_id: &mut Option<u32>) {}
+
+#[cfg(feature = "baseline_trace")]
+fn record_io_ready(blocked_task_id: &mut Option<u32>) {
+    if let Some(task_id) = blocked_task_id.take() {
+        task::record_task_unblock(task_id, WaitClass::Io, UnblockKind::Ready);
+    }
+}
+
+#[cfg(not(feature = "baseline_trace"))]
+fn record_io_ready(_blocked_task_id: &mut Option<u32>) {}

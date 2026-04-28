@@ -1,6 +1,11 @@
 use core::net::Ipv4Addr;
 
 use super::IpAddr;
+#[cfg(feature = "baseline_trace")]
+use crate::{
+    baseline_trace::{UnblockKind, WaitClass},
+    task,
+};
 use awkernel_lib::net::{
     tcp_listener::SockTcpListener, tcp_stream::SockTcpStream, NetManagerError,
 };
@@ -96,13 +101,18 @@ impl TcpListener {
 
     /// Accept a new connection.
     pub async fn accept(&mut self) -> Result<TcpStream, TcpSocketError> {
-        TcpAccepter { listener: self }.await
+        TcpAccepter {
+            listener: self,
+            blocked_task_id: None,
+        }
+        .await
     }
 }
 
 #[pin_project]
 struct TcpAccepter<'a> {
     listener: &'a mut TcpListener,
+    blocked_task_id: Option<u32>,
 }
 
 impl Future for TcpAccepter<'_> {
@@ -116,9 +126,18 @@ impl Future for TcpAccepter<'_> {
         let listener = this.listener;
         let result = listener.listener.accept(cx.waker());
         match result {
-            Ok(None) => core::task::Poll::Pending,
-            Ok(Some(stream)) => core::task::Poll::Ready(Ok(TcpStream { stream })),
-            Err(_e) => core::task::Poll::Ready(Err(TcpSocketError::SocketCreationError)),
+            Ok(None) => {
+                record_io_block(this.blocked_task_id);
+                core::task::Poll::Pending
+            }
+            Ok(Some(stream)) => {
+                record_io_ready(this.blocked_task_id);
+                core::task::Poll::Ready(Ok(TcpStream { stream }))
+            }
+            Err(_e) => {
+                record_io_ready(this.blocked_task_id);
+                core::task::Poll::Ready(Err(TcpSocketError::SocketCreationError))
+            }
         }
     }
 }
@@ -147,7 +166,12 @@ impl TcpStream {
     /// ```
     #[inline(always)]
     pub async fn send(&mut self, buf: &[u8]) -> Result<usize, TcpSendError> {
-        TcpSender { stream: self, buf }.await
+        TcpSender {
+            stream: self,
+            buf,
+            blocked_task_id: None,
+        }
+        .await
     }
 
     /// Receive data from the stream.
@@ -170,7 +194,12 @@ impl TcpStream {
     /// ```
     #[inline(always)]
     pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, TcpRecvError> {
-        TcpReceiver { stream: self, buf }.await
+        TcpReceiver {
+            stream: self,
+            buf,
+            blocked_task_id: None,
+        }
+        .await
     }
 
     /// Get the remote address and port.
@@ -209,6 +238,7 @@ impl TcpStream {
             rx_buffer_size: config.rx_buffer_size,
             tx_buffer_size: config.tx_buffer_size,
             stream: None,
+            blocked_task_id: None,
         }
         .await
     }
@@ -223,6 +253,7 @@ struct TcpConnecter {
     tx_buffer_size: usize,
 
     stream: Option<awkernel_lib::net::tcp_stream::TcpStream>,
+    blocked_task_id: Option<u32>,
 }
 
 impl Future for TcpConnecter {
@@ -235,6 +266,7 @@ impl Future for TcpConnecter {
         let this = self.project();
 
         if let Some(stream) = this.stream.take() {
+            record_io_ready(this.blocked_task_id);
             return core::task::Poll::Ready(Ok(TcpStream { stream }));
         }
 
@@ -250,15 +282,21 @@ impl Future for TcpConnecter {
         match result {
             Ok(stream) => {
                 *this.stream = Some(stream);
+                record_io_block(this.blocked_task_id);
                 core::task::Poll::Pending
             }
             Err(NetManagerError::CannotFindInterface) => {
+                record_io_ready(this.blocked_task_id);
                 core::task::Poll::Ready(Err(TcpSocketError::InvalidInterfaceID))
             }
             Err(NetManagerError::PortInUse) => {
+                record_io_ready(this.blocked_task_id);
                 core::task::Poll::Ready(Err(TcpSocketError::PortInUse))
             }
-            Err(_) => core::task::Poll::Ready(Err(TcpSocketError::SocketCreationError)),
+            Err(_) => {
+                record_io_ready(this.blocked_task_id);
+                core::task::Poll::Ready(Err(TcpSocketError::SocketCreationError))
+            }
         }
     }
 }
@@ -267,6 +305,7 @@ impl Future for TcpConnecter {
 struct TcpSender<'a> {
     stream: &'a mut TcpStream,
     buf: &'a [u8],
+    blocked_task_id: Option<u32>,
 }
 
 impl Future for TcpSender<'_> {
@@ -279,7 +318,7 @@ impl Future for TcpSender<'_> {
         let this = self.project();
         let stream = this.stream;
         let result = stream.stream.send(this.buf, cx.waker());
-        send_result(result)
+        send_result(result, this.blocked_task_id)
     }
 }
 
@@ -287,6 +326,7 @@ impl Future for TcpSender<'_> {
 struct TcpReceiver<'a> {
     stream: &'a mut TcpStream,
     buf: &'a mut [u8],
+    blocked_task_id: Option<u32>,
 }
 
 impl Future for TcpReceiver<'_> {
@@ -299,24 +339,54 @@ impl Future for TcpReceiver<'_> {
         let this = self.project();
         let stream = this.stream;
         let result = stream.stream.recv(this.buf, cx.waker());
-        recv_result(result)
+        recv_result(result, this.blocked_task_id)
     }
 }
+
+#[cfg(feature = "baseline_trace")]
+fn record_io_block(blocked_task_id: &mut Option<u32>) {
+    if blocked_task_id.is_none() {
+        *blocked_task_id = task::record_current_task_block(WaitClass::Io);
+    }
+}
+
+#[cfg(not(feature = "baseline_trace"))]
+fn record_io_block(_blocked_task_id: &mut Option<u32>) {}
+
+#[cfg(feature = "baseline_trace")]
+fn record_io_ready(blocked_task_id: &mut Option<u32>) {
+    if let Some(task_id) = blocked_task_id.take() {
+        task::record_task_unblock(task_id, WaitClass::Io, UnblockKind::Ready);
+    }
+}
+
+#[cfg(not(feature = "baseline_trace"))]
+fn record_io_ready(_blocked_task_id: &mut Option<u32>) {}
 
 #[inline(always)]
 fn send_result(
     result: awkernel_lib::net::tcp_stream::TcpResult,
+    blocked_task_id: &mut Option<u32>,
 ) -> core::task::Poll<Result<usize, TcpSendError>> {
     match result {
-        awkernel_lib::net::tcp_stream::TcpResult::Ok(len) => core::task::Poll::Ready(Ok(len)),
-        awkernel_lib::net::tcp_stream::TcpResult::WouldBlock => core::task::Poll::Pending,
+        awkernel_lib::net::tcp_stream::TcpResult::Ok(len) => {
+            record_io_ready(blocked_task_id);
+            core::task::Poll::Ready(Ok(len))
+        }
+        awkernel_lib::net::tcp_stream::TcpResult::WouldBlock => {
+            record_io_block(blocked_task_id);
+            core::task::Poll::Pending
+        }
         awkernel_lib::net::tcp_stream::TcpResult::CloseLocal => {
+            record_io_ready(blocked_task_id);
             core::task::Poll::Ready(Err(TcpSendError::CloseLocal))
         }
         awkernel_lib::net::tcp_stream::TcpResult::InvalidState => {
+            record_io_ready(blocked_task_id);
             core::task::Poll::Ready(Err(TcpSendError::InvalidState))
         }
         awkernel_lib::net::tcp_stream::TcpResult::Unreachable => {
+            record_io_ready(blocked_task_id);
             core::task::Poll::Ready(Err(TcpSendError::Unreachable))
         }
         _ => unreachable!(),
@@ -326,17 +396,27 @@ fn send_result(
 #[inline(always)]
 fn recv_result(
     result: awkernel_lib::net::tcp_stream::TcpResult,
+    blocked_task_id: &mut Option<u32>,
 ) -> core::task::Poll<Result<usize, TcpRecvError>> {
     match result {
-        awkernel_lib::net::tcp_stream::TcpResult::Ok(len) => core::task::Poll::Ready(Ok(len)),
-        awkernel_lib::net::tcp_stream::TcpResult::WouldBlock => core::task::Poll::Pending,
+        awkernel_lib::net::tcp_stream::TcpResult::Ok(len) => {
+            record_io_ready(blocked_task_id);
+            core::task::Poll::Ready(Ok(len))
+        }
+        awkernel_lib::net::tcp_stream::TcpResult::WouldBlock => {
+            record_io_block(blocked_task_id);
+            core::task::Poll::Pending
+        }
         awkernel_lib::net::tcp_stream::TcpResult::CloseRemote => {
+            record_io_ready(blocked_task_id);
             core::task::Poll::Ready(Err(TcpRecvError::CloseRemote))
         }
         awkernel_lib::net::tcp_stream::TcpResult::InvalidState => {
+            record_io_ready(blocked_task_id);
             core::task::Poll::Ready(Err(TcpRecvError::InvalidState))
         }
         awkernel_lib::net::tcp_stream::TcpResult::Unreachable => {
+            record_io_ready(blocked_task_id);
             core::task::Poll::Ready(Err(TcpRecvError::Unreachable))
         }
         _ => unreachable!(),
