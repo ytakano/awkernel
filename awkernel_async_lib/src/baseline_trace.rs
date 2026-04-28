@@ -5,24 +5,24 @@ use alloc::{
     vec::Vec,
 };
 use array_macro::array;
-use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
-use core::sync::atomic::{AtomicU32, Ordering};
+use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
 use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(not(feature = "std"))]
 use awkernel_lib::console;
 
-pub const SERIAL_PREFIX: &str = "BASELINE_TRACE:";
-pub const SERIAL_DONE_MARKER: &str = "BASELINE_TRACE_DONE";
-pub const ROCQ_BEGIN_MARKER: &str = "BEGIN_ROCQ_TRACE";
-pub const ROCQ_END_MARKER: &str = "END_ROCQ_TRACE";
-pub const TRACE_ROWS_BEGIN_MARKER: &str = "BEGIN_TRACE_ROWS";
-pub const TRACE_ROWS_END_MARKER: &str = "END_TRACE_ROWS";
-pub const SCHED_TRACE_BEGIN_MARKER: &str = "BEGIN_SCHED_TRACE";
-pub const SCHED_TRACE_END_MARKER: &str = "END_SCHED_TRACE";
-pub const TASK_TRACE_BEGIN_MARKER: &str = "BEGIN_TASK_TRACE";
-pub const TASK_TRACE_END_MARKER: &str = "END_TASK_TRACE";
+const SERIAL_PREFIX: &str = "BASELINE_TRACE:";
+const SERIAL_DONE_MARKER: &str = "BASELINE_TRACE_DONE";
+const ROCQ_BEGIN_MARKER: &str = "BEGIN_ROCQ_TRACE";
+const ROCQ_END_MARKER: &str = "END_ROCQ_TRACE";
+const TRACE_ROWS_BEGIN_MARKER: &str = "BEGIN_TRACE_ROWS";
+const TRACE_ROWS_END_MARKER: &str = "END_TRACE_ROWS";
+const SCHED_TRACE_BEGIN_MARKER: &str = "BEGIN_SCHED_TRACE";
+const SCHED_TRACE_END_MARKER: &str = "END_SCHED_TRACE";
+const TASK_TRACE_BEGIN_MARKER: &str = "BEGIN_TASK_TRACE";
+const TASK_TRACE_END_MARKER: &str = "END_TASK_TRACE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaselineTraceEvent {
@@ -49,23 +49,41 @@ pub struct BaselineTraceSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaselineTraceRecord {
-    pub event_id: u64,
-    pub tsc: u64,
-    pub event: BaselineTraceEvent,
-    pub snapshot: BaselineTraceSnapshot,
+struct BaselineTraceRecord {
+    event_id: u64,
+    tsc: u64,
+    event: BaselineTraceEvent,
+    snapshot: BaselineTraceSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskTraceEvent {
-    Spawn { parent_task_id: Option<u32>, child_task_id: u32 },
-    Runnable { task_id: u32 },
-    Choose { task_id: u32 },
-    Dispatch { task_id: u32 },
-    Sleep { task_id: u32 },
-    JoinWait { waiter_task_id: u32, child_task_id: u32 },
-    JoinTargetReady { task_id: u32 },
-    Complete { task_id: u32 },
+    Spawn {
+        parent_task_id: Option<u32>,
+        child_task_id: u32,
+    },
+    Runnable {
+        task_id: u32,
+    },
+    Choose {
+        task_id: u32,
+    },
+    Dispatch {
+        task_id: u32,
+    },
+    Sleep {
+        task_id: u32,
+    },
+    JoinWait {
+        waiter_task_id: u32,
+        child_task_id: u32,
+    },
+    JoinTargetReady {
+        task_id: u32,
+    },
+    Complete {
+        task_id: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +119,8 @@ impl TraceBuffer {
     fn reset(&mut self) {
         self.records.clear();
         if self.records.capacity() < TRACE_CAPACITY {
-            self.records.reserve(TRACE_CAPACITY - self.records.capacity());
+            self.records
+                .reserve(TRACE_CAPACITY - self.records.capacity());
         }
         self.overflowed = false;
     }
@@ -193,7 +212,7 @@ fn next_event_id_block(width: u64) -> u64 {
 }
 
 #[inline(always)]
-pub fn capture_record(
+fn capture_record(
     event: BaselineTraceEvent,
     snapshot: BaselineTraceSnapshot,
 ) -> BaselineTraceRecord {
@@ -223,7 +242,7 @@ fn capture_record_with_event_id(
 }
 
 #[inline(always)]
-pub fn emit_record(record: BaselineTraceRecord) {
+fn emit_record(record: BaselineTraceRecord) {
     let cpu_id = record.snapshot.cpu_id;
     let mut node = MCSNode::new();
     let mut trace = BASELINE_TRACE[cpu_id].lock(&mut node);
@@ -267,7 +286,7 @@ fn capture_task_record_with_event_id(
 }
 
 #[inline(always)]
-pub fn capture_task_record(event: TaskTraceEvent) -> Option<TaskTraceRecord> {
+fn capture_task_record(event: TaskTraceEvent) -> Option<TaskTraceRecord> {
     #[cfg(any(
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
@@ -335,7 +354,7 @@ pub(crate) fn emit_sched_and_task_dispatch(record: SchedAndTaskDispatchTraceReco
 }
 
 #[inline(always)]
-pub fn emit_task_record(record: Option<TaskTraceRecord>) {
+fn emit_task_record(record: Option<TaskTraceRecord>) {
     #[cfg(any(
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
@@ -371,7 +390,7 @@ fn merge_records(mut records: Vec<BaselineTraceRecord>) -> Vec<BaselineTraceReco
 }
 
 #[inline(always)]
-pub fn records() -> Vec<BaselineTraceRecord> {
+fn records() -> Vec<BaselineTraceRecord> {
     let mut merged = Vec::new();
 
     for trace in BASELINE_TRACE.iter() {
@@ -384,7 +403,7 @@ pub fn records() -> Vec<BaselineTraceRecord> {
 }
 
 #[inline(always)]
-pub fn overflowed() -> bool {
+fn overflowed() -> bool {
     let row_overflow = BASELINE_TRACE.iter().any(|trace| {
         let mut node = MCSNode::new();
         let trace = trace.lock(&mut node);
@@ -401,13 +420,13 @@ fn merge_task_trace_records(mut records: Vec<TaskTraceRecord>) -> Vec<TaskTraceR
 }
 
 #[inline(always)]
-pub fn task_trace_records() -> Vec<TaskTraceRecord> {
+fn task_trace_records() -> Vec<TaskTraceRecord> {
     let mut node = MCSNode::new();
     let trace = TASK_TRACE.lock(&mut node);
     merge_task_trace_records(trace.records.clone())
 }
 
-pub fn render_lines() -> Vec<String> {
+fn render_lines() -> Vec<String> {
     records()
         .into_iter()
         .map(|record| {
@@ -488,7 +507,11 @@ fn render_rocq_bool_list(values: &[bool]) -> String {
             "[{}]",
             values
                 .iter()
-                .map(|value| if *value { "true".to_string() } else { "false".to_string() })
+                .map(|value| if *value {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                })
                 .collect::<Vec<_>>()
                 .join("; ")
         )
@@ -514,9 +537,7 @@ fn render_rocq_row(record: BaselineTraceRecord) -> String {
     )
 }
 
-fn render_trace_rows_event(
-    event: BaselineTraceEvent,
-) -> (&'static str, Option<u32>, Option<u32>) {
+fn render_trace_rows_event(event: BaselineTraceEvent) -> (&'static str, Option<u32>, Option<u32>) {
     match event {
         BaselineTraceEvent::Wakeup { task_id } => ("Wakeup", Some(task_id), None),
         BaselineTraceEvent::RequestResched { cpu_id } => {
@@ -528,9 +549,7 @@ fn render_trace_rows_event(
         BaselineTraceEvent::Choose { task_id } => ("Choose", Some(1), Some(task_id)),
         BaselineTraceEvent::Dispatch { task_id } => ("Dispatch", Some(1), Some(task_id)),
         BaselineTraceEvent::Complete { task_id } => ("Complete", Some(task_id), None),
-        BaselineTraceEvent::JoinTargetReady { task_id } => {
-            ("JoinTargetReady", Some(task_id), None)
-        }
+        BaselineTraceEvent::JoinTargetReady { task_id } => ("JoinTargetReady", Some(task_id), None),
         BaselineTraceEvent::Stutter => ("Stutter", None, None),
     }
 }
@@ -553,7 +572,13 @@ fn render_trace_rows_option_list(values: &[Option<u32>]) -> String {
 fn render_trace_rows_bool_list(values: &[bool]) -> String {
     values
         .iter()
-        .map(|value| if *value { "true".to_string() } else { "false".to_string() })
+        .map(|value| {
+            if *value {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -624,19 +649,20 @@ fn render_task_trace_record(record: TaskTraceRecord) -> String {
     )
 }
 
-pub fn render_task_trace_artifact_lines() -> Vec<String> {
+fn render_task_trace_artifact_lines() -> Vec<String> {
     task_trace_records()
         .into_iter()
         .map(render_task_trace_record)
         .collect()
 }
 
-pub fn render_rocq_handoff_artifact_lines() -> Vec<String> {
+fn render_rocq_handoff_artifact_lines() -> Vec<String> {
     let records = records();
     let mut lines = vec![
         "From Stdlib Require Import List.".to_string(),
         "From RocqSched Require Import Operational.Common.Step.".to_string(),
-        "From RocqSched Require Import Operational.Awkernel.Minimal.CapturedTraceSyntax.".to_string(),
+        "From RocqSched Require Import Operational.Awkernel.Minimal.CapturedTraceSyntax."
+            .to_string(),
         "Import ListNotations.".to_string(),
         "".to_string(),
         "Definition awk_generated_handoff_rows : list AwkernelSchedTraceEntry :=".to_string(),
@@ -787,10 +813,7 @@ mod tests {
 
         let records = records();
         assert_eq!(records.len(), 2);
-        assert_eq!(
-            records[0].event,
-            BaselineTraceEvent::Wakeup { task_id: 1 }
-        );
+        assert_eq!(records[0].event, BaselineTraceEvent::Wakeup { task_id: 1 });
         assert_eq!(records[1].event, BaselineTraceEvent::Stutter);
     }
 
@@ -852,16 +875,12 @@ mod tests {
 
         let lines = render_rocq_handoff_artifact_lines();
         assert_eq!(lines[0], "From Stdlib Require Import List.");
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("Definition awk_generated_handoff_rows"))
-        );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("mkAwkernelSchedTraceEntry 0 (EvWakeup 1) None [1] false None [None] [false] [None]"))
-        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Definition awk_generated_handoff_rows")));
+        assert!(lines.iter().any(|line| line.contains(
+            "mkAwkernelSchedTraceEntry 0 (EvWakeup 1) None [1] false None [None] [false] [None]"
+        )));
         assert!(
             lines
                 .iter()
