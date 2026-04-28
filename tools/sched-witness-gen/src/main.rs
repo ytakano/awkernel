@@ -1,4 +1,6 @@
 use clap::{Parser, Subcommand};
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
@@ -154,15 +156,20 @@ fn run() -> Result<(), String> {
 }
 
 fn run_periodic_edf(args: PeriodicEdfArgs) -> Result<(), String> {
-    match args.threads.as_str() {
-        "auto" | "1" => {}
-        other => return Err(format!("parallel generation is planned for PR3; unsupported --threads {other}")),
-    }
+    let thread_mode = ThreadMode::parse(&args.threads)?;
 
     let csv = fs::read_to_string(&args.tasks)
         .map_err(|err| format!("failed to read {}: {err}", args.tasks.display()))?;
     let tasks = parse_csv(&csv)?;
-    let witness = generate_witness(&tasks, args.threads)?;
+    let witness = match thread_mode {
+        ThreadMode::Serial => generate_witness(&tasks, &thread_mode)?,
+        ThreadMode::Auto => generate_witness(&tasks, &thread_mode)?,
+        ThreadMode::Fixed(n) => ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .map_err(|err| format!("failed to build rayon thread pool: {err}"))?
+            .install(|| generate_witness(&tasks, &thread_mode))?,
+    };
     let json = serde_json::to_string_pretty(&witness)
         .map_err(|err| format!("failed to serialize witness: {err}"))?;
     fs::write(&args.out, format!("{json}\n"))
@@ -170,7 +177,37 @@ fn run_periodic_edf(args: PeriodicEdfArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn generate_witness(tasks: &[Task], thread_mode: String) -> Result<Witness, String> {
+#[derive(Clone, Debug)]
+enum ThreadMode {
+    Serial,
+    Fixed(usize),
+    Auto,
+}
+
+impl ThreadMode {
+    fn parse(text: &str) -> Result<Self, String> {
+        match text {
+            "auto" => Ok(Self::Auto),
+            "1" => Ok(Self::Serial),
+            _ => {
+                let n = text
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid --threads value: {text}"))?;
+                if n == 0 {
+                    Err("--threads must be positive or auto".to_string())
+                } else {
+                    Ok(Self::Fixed(n))
+                }
+            }
+        }
+    }
+
+    fn is_serial(&self) -> bool {
+        matches!(self, Self::Serial)
+    }
+}
+
+fn generate_witness(tasks: &[Task], thread_mode: &ThreadMode) -> Result<Witness, String> {
     let hyperperiod = tasks.iter().try_fold(1, |acc, task| checked_lcm(acc, task.period))?;
     let max_offset = tasks.iter().map(|task| task.offset).max().unwrap_or(0);
     let max_deadline = tasks.iter().map(|task| task.deadline).max().unwrap_or(0);
@@ -185,36 +222,29 @@ fn generate_witness(tasks: &[Task], thread_mode: String) -> Result<Witness, Stri
     let prefix_jobs = jobs_before(tasks, horizon)?;
     ensure_limit(prefix_jobs.len() <= MAX_BASIS_JOBS, "prefix job count")?;
     let slots = simulate_edf(&prefix_jobs, horizon);
-    let completed_by = prefix_jobs
-        .iter()
-        .map(|job| completion_time(&slots, job))
-        .collect::<Vec<_>>();
-    let backlog_free_matrix = backlog_matrix(&prefix_jobs, &completed_by);
+    let completed_by = map_vec(thread_mode, &prefix_jobs, |job| Ok(completion_time(&slots, job)))?;
+    let backlog_free_matrix = backlog_matrix(thread_mode, &prefix_jobs, &completed_by)?;
     let prefix_basis_jobs = prefix_jobs.iter().map(|job| job.id).collect::<Vec<_>>();
 
     let transport_basis_jobs = transport_residue_jobs(tasks, hyperperiod)?;
     ensure_limit(transport_basis_jobs.len() <= MAX_BASIS_JOBS, "transport basis job count")?;
     let transport_basis_job_count = transport_basis_jobs.len();
-    let classes = transport_basis_jobs
-        .iter()
-        .map(|job_id| TransportClass {
+    let classes = map_vec(thread_mode, &transport_basis_jobs, |job_id| {
+        Ok(TransportClass {
             rep_job: *job_id,
             completion_offset: hyperperiod,
             backlog_offset: hyperperiod,
         })
-        .collect::<Vec<_>>();
+    })?;
     let job_class = (0..transport_basis_jobs.len()).map(|i| i as u64).collect::<Vec<_>>();
     let job_shift = vec![hyperperiod; transport_basis_jobs.len()];
 
-    let class_relevant_jobs = transport_basis_jobs
-        .iter()
-        .map(|job_id| relevant_earlier_jobs(tasks, *job_id))
-        .collect::<Result<Vec<_>, _>>()?;
-    let window_target_certs = transport_basis_jobs
-        .iter()
-        .enumerate()
-        .map(|(class_id, target)| window_target_cert(tasks, hyperperiod, &transport_basis_jobs, class_id, *target))
-        .collect::<Result<Vec<_>, _>>()?;
+    let class_relevant_jobs =
+        map_vec(thread_mode, &transport_basis_jobs, |job_id| relevant_earlier_jobs(tasks, *job_id))?;
+    let window_target_certs =
+        map_indexed_vec(thread_mode, &transport_basis_jobs, |class_id, target| {
+            window_target_cert(tasks, hyperperiod, &transport_basis_jobs, class_id, *target)
+        })?;
 
     let post_reset_horizon = checked_mul(2, hyperperiod)?
         .checked_add(max_deadline)
@@ -228,20 +258,15 @@ fn generate_witness(tasks: &[Task], thread_mode: String) -> Result<Witness, Stri
         }
     }
     post_reset_targets.sort_unstable();
-    let post_reset_window_target_certs = post_reset_targets
-        .iter()
-        .map(|job_id| {
+    let post_reset_window_target_certs = map_vec(thread_mode, &post_reset_targets, |job_id| {
             let class_id = transport_class_for(tasks, hyperperiod, &transport_basis_jobs, *job_id)?;
             window_target_cert(tasks, hyperperiod, &transport_basis_jobs, class_id, *job_id)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        })?;
 
     let dbf_cutoff = scalar_dbf_cutoff(tasks, hyperperiod)?;
     ensure_limit(dbf_cutoff <= MAX_HORIZON, "DBF cutoff")?;
-    let ok_table = critical_dbf_points(tasks, dbf_cutoff)
-        .into_iter()
-        .map(|t| periodic_dbf(tasks, t) <= t)
-        .collect::<Vec<_>>();
+    let critical_points = critical_dbf_points(tasks, dbf_cutoff);
+    let ok_table = map_vec(thread_mode, &critical_points, |t| Ok(periodic_dbf(tasks, *t) <= *t))?;
 
     Ok(Witness {
         schema_version: 1,
@@ -285,9 +310,35 @@ fn generate_witness(tasks: &[Task], thread_mode: String) -> Result<Witness, Stri
             transport_basis_job_count,
             window_target_count: transport_basis_job_count,
             post_reset_window_target_count: post_reset_jobs.len(),
-            thread_mode,
+            thread_mode: "deterministic".to_string(),
         },
     })
+}
+
+fn map_vec<T, U, F>(thread_mode: &ThreadMode, input: &[T], f: F) -> Result<Vec<U>, String>
+where
+    T: Sync,
+    U: Send,
+    F: Fn(&T) -> Result<U, String> + Sync + Send,
+{
+    if thread_mode.is_serial() {
+        input.iter().map(f).collect()
+    } else {
+        input.par_iter().map(f).collect()
+    }
+}
+
+fn map_indexed_vec<T, U, F>(thread_mode: &ThreadMode, input: &[T], f: F) -> Result<Vec<U>, String>
+where
+    T: Sync,
+    U: Send,
+    F: Fn(usize, &T) -> Result<U, String> + Sync + Send,
+{
+    if thread_mode.is_serial() {
+        input.iter().enumerate().map(|(i, value)| f(i, value)).collect()
+    } else {
+        input.par_iter().enumerate().map(|(i, value)| f(i, value)).collect()
+    }
 }
 
 fn parse_csv(content: &str) -> Result<Vec<Task>, String> {
@@ -453,15 +504,15 @@ fn completion_time(slots: &[Option<u64>], job: &Job) -> u64 {
     slots.len() as u64
 }
 
-fn backlog_matrix(jobs: &[Job], completed_by: &[u64]) -> Vec<Vec<bool>> {
-    jobs.iter()
-        .map(|target| {
+fn backlog_matrix(thread_mode: &ThreadMode, jobs: &[Job], completed_by: &[u64]) -> Result<Vec<Vec<bool>>, String> {
+    map_vec(thread_mode, jobs, |target| {
+        Ok(
             completed_by
                 .iter()
                 .map(|completion| *completion <= target.release)
                 .collect()
-        })
-        .collect()
+        )
+    })
 }
 
 fn transport_residue_jobs(tasks: &[Task], period: u64) -> Result<Vec<u64>, String> {
