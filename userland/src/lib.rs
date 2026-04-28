@@ -13,6 +13,35 @@ use alloc::borrow::Cow;
 ))]
 use awkernel_async_lib::{scheduler::SchedulerType, task};
 
+#[cfg(any(
+    feature = "baseline_trace_vm",
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
+const _: () = {
+    #[cfg(any(
+        all(feature = "baseline_trace_vm", feature = "single_async_trace_vm"),
+        all(feature = "baseline_trace_vm", feature = "nested_spawn_trace_vm"),
+        all(feature = "baseline_trace_vm", feature = "multi_async_trace_vm"),
+        all(feature = "baseline_trace_vm", feature = "sleep_wakeup_trace_vm"),
+        all(feature = "baseline_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "single_async_trace_vm", feature = "nested_spawn_trace_vm"),
+        all(feature = "single_async_trace_vm", feature = "multi_async_trace_vm"),
+        all(feature = "single_async_trace_vm", feature = "sleep_wakeup_trace_vm"),
+        all(feature = "single_async_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "nested_spawn_trace_vm", feature = "multi_async_trace_vm"),
+        all(feature = "nested_spawn_trace_vm", feature = "sleep_wakeup_trace_vm"),
+        all(feature = "nested_spawn_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "multi_async_trace_vm", feature = "sleep_wakeup_trace_vm"),
+        all(feature = "multi_async_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm")
+    ))]
+    compile_error!("enable exactly one trace VM feature in userland");
+};
+
 pub async fn main() -> Result<(), Cow<'static, str>> {
     #[cfg(any(
         feature = "baseline_trace_vm",
@@ -86,75 +115,88 @@ pub async fn main() -> Result<(), Cow<'static, str>> {
     }
 }
 
-#[cfg(feature = "baseline_trace_vm")]
-pub fn install_baseline_trace_vm() {
-    awkernel_async_lib::baseline_trace::reset();
+pub fn try_install_trace_vm() -> bool {
+    #[cfg(any(
+        feature = "baseline_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
+    ))]
+    {
+        install_trace_vm();
+        true
+    }
 
+    #[cfg(not(any(
+        feature = "baseline_trace_vm",
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
+    )))]
+    {
+        false
+    }
+}
+
+#[cfg(any(
+    feature = "baseline_trace_vm",
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
+pub fn install_trace_vm() {
+    awkernel_async_lib::baseline_trace::reset();
+    #[cfg(any(
+        feature = "single_async_trace_vm",
+        feature = "nested_spawn_trace_vm",
+        feature = "multi_async_trace_vm",
+        feature = "sleep_wakeup_trace_vm",
+        feature = "generic_trace_vm"
+    ))]
+    awkernel_async_lib::baseline_trace::enable_workload_trace_artifacts();
+
+    #[cfg(feature = "baseline_trace_vm")]
     let task_id = task::spawn(
         "[Awkernel] baseline trace worker".into(),
         async { Ok(()) },
         SchedulerType::PrioritizedFIFO(31),
     );
 
-    awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
-}
-
-#[cfg(feature = "single_async_trace_vm")]
-pub fn install_single_async_trace_vm() {
-    awkernel_async_lib::baseline_trace::reset();
-
+    #[cfg(feature = "single_async_trace_vm")]
     let task_id = task::spawn(
         "[Awkernel] single_async trace root".into(),
         async { trace_minimal::run_single_async().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 
-    awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
-}
-
-#[cfg(feature = "nested_spawn_trace_vm")]
-pub fn install_nested_spawn_trace_vm() {
-    awkernel_async_lib::baseline_trace::reset();
-
+    #[cfg(feature = "nested_spawn_trace_vm")]
     let task_id = task::spawn(
         "[Awkernel] nested_spawn trace root".into(),
         async { trace_minimal::run_nested_spawn().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 
-    awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
-}
-
-#[cfg(feature = "multi_async_trace_vm")]
-pub fn install_multi_async_trace_vm() {
-    awkernel_async_lib::baseline_trace::reset();
-
+    #[cfg(feature = "multi_async_trace_vm")]
     let task_id = task::spawn(
         "[Awkernel] multi_async trace root".into(),
         async { trace_minimal::run_multi_async().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 
-    awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
-}
-
-#[cfg(feature = "sleep_wakeup_trace_vm")]
-pub fn install_sleep_wakeup_trace_vm() {
-    awkernel_async_lib::baseline_trace::reset();
-
+    #[cfg(feature = "sleep_wakeup_trace_vm")]
     let task_id = task::spawn(
         "[Awkernel] sleep_wakeup trace root".into(),
         async { trace_minimal::run_sleep_wakeup().await },
         SchedulerType::PrioritizedFIFO(31),
     );
 
-    awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
-}
-
-#[cfg(feature = "generic_trace_vm")]
-pub fn install_generic_trace_vm() {
-    awkernel_async_lib::baseline_trace::reset();
-
+    #[cfg(feature = "generic_trace_vm")]
     let task_id = task::spawn(
         "[Awkernel] generic_random trace root".into(),
         async { trace_minimal::run_generic_random().await },

@@ -153,14 +153,14 @@ x86_64_uefi.img: kernel-x86_64.elf
 	RUSTFLAGS="$(RUSTC_MISC_ARGS)" cargo +$(RUSTV) run --release --package x86bootdisk --no-default-features --features uefi -- --kernel $< --output $@ --pxe x86_64_uefi_pxe_boot --boot-type uefi
 
 build-baseline-trace-x86_64: FORCE
-	$(MAKE) x86_64 RELEASE=1 OPT='--release --features baseline_trace_vm'
+	$(MAKE) x86_64 RELEASE=1 OPT='--release --features baseline_trace,userland/baseline_trace_vm'
 
 build-workload-trace-x86_64: FORCE
 	@if [ -z "$(WORKLOAD_TRACE_FEATURE)" ]; then \
 		echo "unsupported WORKLOAD_SCENARIO: $(WORKLOAD_SCENARIO)"; \
 		exit 1; \
 	fi
-	GENERIC_TRACE_SEED='$(GENERIC_TRACE_SEED)' $(MAKE) x86_64 RELEASE=1 OPT='--release --features $(WORKLOAD_TRACE_FEATURE)'
+	GENERIC_TRACE_SEED='$(GENERIC_TRACE_SEED)' $(MAKE) x86_64 RELEASE=1 OPT='--release --features baseline_trace,$(WORKLOAD_TRACE_FEATURE)'
 
 $(X86ASM): FORCE
 	$(MAKE) -C $@
@@ -195,11 +195,11 @@ QEMU_X86_2CPU_ARGS+= -m 2G -smp 2
 BASELINE_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_baseline.log
 BASELINE_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_baseline.log
 WORKLOAD_SCENARIO ?= single_async
-WORKLOAD_TRACE_FEATURE_single_async=single_async_trace_vm
-WORKLOAD_TRACE_FEATURE_nested_spawn=nested_spawn_trace_vm
-WORKLOAD_TRACE_FEATURE_multi_async=multi_async_trace_vm
-WORKLOAD_TRACE_FEATURE_sleep_wakeup=sleep_wakeup_trace_vm
-WORKLOAD_TRACE_FEATURE_generic_random=generic_trace_vm
+WORKLOAD_TRACE_FEATURE_single_async=userland/single_async_trace_vm
+WORKLOAD_TRACE_FEATURE_nested_spawn=userland/nested_spawn_trace_vm
+WORKLOAD_TRACE_FEATURE_multi_async=userland/multi_async_trace_vm
+WORKLOAD_TRACE_FEATURE_sleep_wakeup=userland/sleep_wakeup_trace_vm
+WORKLOAD_TRACE_FEATURE_generic_random=userland/generic_trace_vm
 WORKLOAD_TRACE_FEATURE=$(WORKLOAD_TRACE_FEATURE_$(WORKLOAD_SCENARIO))
 WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log

@@ -105,36 +105,6 @@ rv64 = [
 ]
 std = ["perf", "awkernel_lib/std", "awkernel_async_lib/std", "dep:libc"]
 baseline_trace = ["awkernel_async_lib/baseline_trace"]
-baseline_trace_vm = [
-    "baseline_trace",
-    "awkernel_async_lib/baseline_trace_vm",
-    "userland/baseline_trace_vm",
-]
-single_async_trace_vm = [
-    "baseline_trace",
-    "awkernel_async_lib/single_async_trace_vm",
-    "userland/single_async_trace_vm",
-]
-nested_spawn_trace_vm = [
-    "baseline_trace",
-    "awkernel_async_lib/nested_spawn_trace_vm",
-    "userland/nested_spawn_trace_vm",
-]
-multi_async_trace_vm = [
-    "baseline_trace",
-    "awkernel_async_lib/multi_async_trace_vm",
-    "userland/multi_async_trace_vm",
-]
-sleep_wakeup_trace_vm = [
-    "baseline_trace",
-    "awkernel_async_lib/sleep_wakeup_trace_vm",
-    "userland/sleep_wakeup_trace_vm",
-]
-generic_trace_vm = [
-    "baseline_trace",
-    "awkernel_async_lib/generic_trace_vm",
-    "userland/generic_trace_vm",
-]
 aarch64 = [
     "perf",
     "no_std_unwinding",

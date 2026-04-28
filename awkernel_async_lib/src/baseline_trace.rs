@@ -6,45 +6,23 @@ use alloc::{
 use array_macro::array;
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
 use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicBool, AtomicU64};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(not(feature = "std"))]
 use awkernel_lib::console;
 
+#[cfg(not(feature = "std"))]
 const SERIAL_PREFIX: &str = "BASELINE_TRACE:";
+#[cfg(not(feature = "std"))]
 const SERIAL_DONE_MARKER: &str = "BASELINE_TRACE_DONE";
-#[cfg(any(
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
+#[cfg(not(feature = "std"))]
 const SCHED_TRACE_BEGIN_MARKER: &str = "BEGIN_SCHED_TRACE";
-#[cfg(any(
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
+#[cfg(not(feature = "std"))]
 const SCHED_TRACE_END_MARKER: &str = "END_SCHED_TRACE";
-#[cfg(any(
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
+#[cfg(not(feature = "std"))]
 const TASK_TRACE_BEGIN_MARKER: &str = "BEGIN_TASK_TRACE";
-#[cfg(any(
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
+#[cfg(not(feature = "std"))]
 const TASK_TRACE_END_MARKER: &str = "END_TASK_TRACE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,13 +158,6 @@ impl TaskTraceBuffer {
         self.overflowed = false;
     }
 
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
     fn push(&mut self, record: TaskTraceRecord) {
         if self.records.len() >= LIFECYCLE_TRACE_CAPACITY {
             self.overflowed = true;
@@ -202,6 +173,7 @@ static BASELINE_TRACE: [Mutex<TraceBuffer>; NUM_MAX_CPU] =
 static TASK_TRACE: Mutex<TaskTraceBuffer> = Mutex::new(TaskTraceBuffer::new());
 static TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(0);
 static TRACE_TASK_ID: AtomicU32 = AtomicU32::new(1);
+static WORKLOAD_ARTIFACT_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(not(feature = "std"))]
 static DUMP_ON_COMPLETE_TASK_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -209,6 +181,7 @@ static DUMP_ON_COMPLETE_TASK_ID: AtomicU32 = AtomicU32::new(0);
 pub fn reset() {
     TRACE_EVENT_ID.store(0, core::sync::atomic::Ordering::Release);
     TRACE_TASK_ID.store(1, Ordering::Release);
+    WORKLOAD_ARTIFACT_ENABLED.store(false, Ordering::Release);
     for trace in BASELINE_TRACE.iter() {
         let mut node = MCSNode::new();
         let mut trace = trace.lock(&mut node);
@@ -217,6 +190,21 @@ pub fn reset() {
     let mut node = MCSNode::new();
     let mut task_trace = TASK_TRACE.lock(&mut node);
     task_trace.reset();
+}
+
+#[inline(always)]
+pub fn set_workload_artifact_enabled(enabled: bool) {
+    WORKLOAD_ARTIFACT_ENABLED.store(enabled, Ordering::Release);
+}
+
+#[inline(always)]
+pub fn enable_workload_trace_artifacts() {
+    set_workload_artifact_enabled(true);
+}
+
+#[inline(always)]
+fn workload_artifact_enabled() -> bool {
+    WORKLOAD_ARTIFACT_ENABLED.load(Ordering::Acquire)
 }
 
 #[inline(always)]
@@ -283,56 +271,21 @@ fn capture_task_record_with_event_id(
     event_id: u64,
     event: TaskTraceEvent,
 ) -> Option<TaskTraceRecord> {
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
-    {
+    if workload_artifact_enabled() {
         Some(TaskTraceRecord { event_id, event })
-    }
-
-    #[cfg(not(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    )))]
-    {
-        let _ = event_id;
-        let _ = event;
+    } else {
         None
     }
 }
 
 #[inline(always)]
 fn capture_task_record(event: TaskTraceEvent) -> Option<TaskTraceRecord> {
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
-    {
+    if workload_artifact_enabled() {
         Some(TaskTraceRecord {
             event_id: next_event_id(),
             event,
         })
-    }
-
-    #[cfg(not(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    )))]
-    {
-        let _ = event;
+    } else {
         None
     }
 }
@@ -378,27 +331,11 @@ pub(crate) fn emit_sched_and_task_dispatch(record: SchedAndTaskDispatchTraceReco
 
 #[inline(always)]
 fn emit_task_record(record: Option<TaskTraceRecord>) {
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
     if let Some(record) = record {
         let mut node = MCSNode::new();
         let mut trace = TASK_TRACE.lock(&mut node);
         trace.push(record);
     }
-
-    #[cfg(not(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    )))]
-    let _ = record;
 }
 
 #[inline(always)]
@@ -437,28 +374,12 @@ fn overflowed() -> bool {
     row_overflow || task_trace.overflowed
 }
 
-#[cfg(any(
-    test,
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
 fn merge_task_trace_records(mut records: Vec<TaskTraceRecord>) -> Vec<TaskTraceRecord> {
     records.sort_by(|lhs, rhs| lhs.event_id.cmp(&rhs.event_id));
     records
 }
 
 #[inline(always)]
-#[cfg(any(
-    test,
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
 fn task_trace_records() -> Vec<TaskTraceRecord> {
     let mut node = MCSNode::new();
     let trace = TASK_TRACE.lock(&mut node);
@@ -565,14 +486,6 @@ pub fn render_trace_rows_artifact_lines() -> Vec<String> {
         .collect()
 }
 
-#[cfg(any(
-    test,
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
 fn render_task_trace_kind(event: TaskTraceEvent) -> (&'static str, u32, Option<u32>) {
     match event {
         TaskTraceEvent::Spawn {
@@ -592,14 +505,6 @@ fn render_task_trace_kind(event: TaskTraceEvent) -> (&'static str, u32, Option<u
     }
 }
 
-#[cfg(any(
-    test,
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
 fn render_task_trace_record(record: TaskTraceRecord) -> String {
     let (kind, subject, related) = render_task_trace_kind(record.event);
     format!(
@@ -610,14 +515,6 @@ fn render_task_trace_record(record: TaskTraceRecord) -> String {
     )
 }
 
-#[cfg(any(
-    test,
-    feature = "single_async_trace_vm",
-    feature = "nested_spawn_trace_vm",
-    feature = "multi_async_trace_vm",
-    feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
-))]
 fn render_task_trace_artifact_lines() -> Vec<String> {
     task_trace_records()
         .into_iter()
@@ -646,14 +543,7 @@ pub fn dump_to_console() {
         console::print(&format!("{SERIAL_PREFIX} {line}\r\n"));
     }
     console::print(&format!("{SERIAL_DONE_MARKER}\r\n"));
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
-    {
+    if workload_artifact_enabled() {
         console::print(&format!("{SCHED_TRACE_BEGIN_MARKER}\r\n"));
         for line in render_trace_rows_artifact_lines() {
             console::print(&format!("{line}\r\n"));
@@ -837,13 +727,6 @@ mod tests {
         assert_eq!(records[0].event_id, 0);
         assert_eq!(records[1].event_id, 1);
 
-        #[cfg(not(any(
-            feature = "single_async_trace_vm",
-            feature = "nested_spawn_trace_vm",
-            feature = "multi_async_trace_vm",
-            feature = "sleep_wakeup_trace_vm",
-            feature = "generic_trace_vm"
-        )))]
         assert!(task_trace_records().is_empty());
     }
 
@@ -870,17 +753,11 @@ mod tests {
         assert_eq!(lines[2], "1\tComplete\t42\t-\t-\t\ttrue\t-\t-\ttrue\t-");
     }
 
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
     #[test]
     fn dispatch_capture_pairs_sched_and_task_event_ids() {
         let _guard = TEST_LOCK.lock().unwrap();
         reset();
+        set_workload_artifact_enabled(true);
 
         let pending = capture_sched_and_task_dispatch(
             7,
@@ -904,17 +781,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
     #[test]
     fn delayed_dispatch_emit_keeps_task_trace_order_by_reserved_event_id() {
         let _guard = TEST_LOCK.lock().unwrap();
         reset();
+        set_workload_artifact_enabled(true);
 
         let pending = capture_sched_and_task_dispatch(
             7,
@@ -931,17 +802,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(
-        feature = "single_async_trace_vm",
-        feature = "nested_spawn_trace_vm",
-        feature = "multi_async_trace_vm",
-        feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
-    ))]
     #[test]
     fn join_target_ready_renders_task_trace_row() {
         let _guard = TEST_LOCK.lock().unwrap();
         reset();
+        set_workload_artifact_enabled(true);
 
         record_task_trace(TaskTraceEvent::JoinTargetReady { task_id: 42 });
 

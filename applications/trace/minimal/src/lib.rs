@@ -18,6 +18,9 @@ use alloc::{boxed::Box, vec::Vec};
     feature = "generic_trace_vm"
 ))]
 use awkernel_async_lib::r#yield;
+#[cfg(any(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm"))]
+use awkernel_async_lib::sleep;
+use awkernel_async_lib::task::TaskResult;
 #[cfg(any(
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
@@ -26,12 +29,9 @@ use awkernel_async_lib::r#yield;
 ))]
 use awkernel_async_lib::{scheduler::SchedulerType, spawn};
 #[cfg(any(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm"))]
-use awkernel_async_lib::sleep;
-use awkernel_async_lib::task::TaskResult;
+use core::time::Duration;
 #[cfg(feature = "generic_trace_vm")]
 use core::{future::Future, pin::Pin};
-#[cfg(any(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm"))]
-use core::time::Duration;
 
 #[cfg(any(
     feature = "nested_spawn_trace_vm",
@@ -199,10 +199,7 @@ fn parse_generic_trace_seed(raw: &str) -> Option<u64> {
         return None;
     }
 
-    if let Some(hex) = raw
-        .strip_prefix("0x")
-        .or_else(|| raw.strip_prefix("0X"))
-    {
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16).ok()
     } else {
         raw.parse().ok()

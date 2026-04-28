@@ -49,9 +49,9 @@ impl Future for Sleep {
                 #[cfg(feature = "baseline_trace")]
                 if let Some(task_id) = task::get_current_trace_task_id(awkernel_lib::cpu::cpu_id())
                 {
-                    baseline_trace::record_task_trace(
-                        baseline_trace::TaskTraceEvent::Sleep { task_id },
-                    );
+                    baseline_trace::record_task_trace(baseline_trace::TaskTraceEvent::Sleep {
+                        task_id,
+                    });
                 }
 
                 // Invoke `sleep_handler` after `self.dur` time.

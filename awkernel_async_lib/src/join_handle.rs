@@ -26,9 +26,7 @@ impl<T> JoinHandle<T> {
 
     pub async fn join(self) -> Result<T, Canceled> {
         #[cfg(feature = "baseline_trace")]
-        if let Some(waiter_task_id) =
-            task::get_current_trace_task_id(awkernel_lib::cpu::cpu_id())
-        {
+        if let Some(waiter_task_id) = task::get_current_trace_task_id(awkernel_lib::cpu::cpu_id()) {
             baseline_trace::record_task_trace(baseline_trace::TaskTraceEvent::JoinWait {
                 waiter_task_id,
                 child_task_id: self.child_trace_task_id,
