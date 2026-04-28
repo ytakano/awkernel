@@ -16,7 +16,6 @@ members = [
     "applications/rd_gen_to_dags",
     "applications/trace/minimal",
     "applications/tests/*",
-    "tools/sched-witness-gen",
     "smoltcp",
     "awkernel_futures_macro",
 ]
