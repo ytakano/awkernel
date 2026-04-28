@@ -243,7 +243,7 @@ fn kernel_main2(
         wait_forever();
     };
 
-    #[cfg(any(feature = "baseline_trace_vm", feature = "handoff_trace_vm"))]
+    #[cfg(feature = "baseline_trace_vm")]
     if let Some(raw_cpu_id) = non_primary_cpus.iter().next().copied() {
         non_primary_cpus.retain(|cpu_id| *cpu_id == raw_cpu_id);
     }

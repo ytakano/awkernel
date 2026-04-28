@@ -1,7 +1,6 @@
 use alloc::{
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 use array_macro::array;
@@ -15,13 +14,37 @@ use awkernel_lib::console;
 
 const SERIAL_PREFIX: &str = "BASELINE_TRACE:";
 const SERIAL_DONE_MARKER: &str = "BASELINE_TRACE_DONE";
-const ROCQ_BEGIN_MARKER: &str = "BEGIN_ROCQ_TRACE";
-const ROCQ_END_MARKER: &str = "END_ROCQ_TRACE";
-const TRACE_ROWS_BEGIN_MARKER: &str = "BEGIN_TRACE_ROWS";
-const TRACE_ROWS_END_MARKER: &str = "END_TRACE_ROWS";
+#[cfg(any(
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 const SCHED_TRACE_BEGIN_MARKER: &str = "BEGIN_SCHED_TRACE";
+#[cfg(any(
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 const SCHED_TRACE_END_MARKER: &str = "END_SCHED_TRACE";
+#[cfg(any(
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 const TASK_TRACE_BEGIN_MARKER: &str = "BEGIN_TASK_TRACE";
+#[cfg(any(
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 const TASK_TRACE_END_MARKER: &str = "END_TASK_TRACE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,12 +437,28 @@ fn overflowed() -> bool {
     row_overflow || task_trace.overflowed
 }
 
+#[cfg(any(
+    test,
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 fn merge_task_trace_records(mut records: Vec<TaskTraceRecord>) -> Vec<TaskTraceRecord> {
     records.sort_by(|lhs, rhs| lhs.event_id.cmp(&rhs.event_id));
     records
 }
 
 #[inline(always)]
+#[cfg(any(
+    test,
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 fn task_trace_records() -> Vec<TaskTraceRecord> {
     let mut node = MCSNode::new();
     let trace = TASK_TRACE.lock(&mut node);
@@ -441,100 +480,6 @@ fn render_lines() -> Vec<String> {
             )
         })
         .collect()
-}
-
-fn render_rocq_event(event: BaselineTraceEvent) -> String {
-    match event {
-        BaselineTraceEvent::Wakeup { task_id } => format!("EvWakeup {task_id}"),
-        BaselineTraceEvent::RequestResched { cpu_id } => {
-            format!("EvRequestResched {cpu_id}")
-        }
-        BaselineTraceEvent::HandleResched { cpu_id } => {
-            format!("EvHandleResched {cpu_id}")
-        }
-        BaselineTraceEvent::Choose { task_id } => format!("EvChoose 1 {task_id}"),
-        BaselineTraceEvent::Dispatch { task_id } => format!("EvDispatch 1 {task_id}"),
-        BaselineTraceEvent::Complete { task_id } => format!("EvComplete {task_id}"),
-        BaselineTraceEvent::JoinTargetReady { task_id } => {
-            format!("EvJoinTargetReady {task_id}")
-        }
-        BaselineTraceEvent::Stutter => "EvStutter".to_string(),
-    }
-}
-
-fn render_rocq_option(value: Option<u32>) -> String {
-    match value {
-        Some(v) => format!("(Some {v})"),
-        None => "None".to_string(),
-    }
-}
-
-fn render_rocq_list(values: &[u32]) -> String {
-    if values.is_empty() {
-        "[]".to_string()
-    } else {
-        format!(
-            "[{}]",
-            values
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    }
-}
-
-fn render_rocq_option_list(values: &[Option<u32>]) -> String {
-    if values.is_empty() {
-        "[]".to_string()
-    } else {
-        format!(
-            "[{}]",
-            values
-                .iter()
-                .map(|value| render_rocq_option(*value))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    }
-}
-
-fn render_rocq_bool_list(values: &[bool]) -> String {
-    if values.is_empty() {
-        "[]".to_string()
-    } else {
-        format!(
-            "[{}]",
-            values
-                .iter()
-                .map(|value| if *value {
-                    "true".to_string()
-                } else {
-                    "false".to_string()
-                })
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    }
-}
-
-fn render_rocq_row(record: BaselineTraceRecord) -> String {
-    format!(
-        "mkAwkernelSchedTraceEntry {} ({}) {} {} {} {} {} {} {}",
-        record.snapshot.cpu_id,
-        render_rocq_event(record.event),
-        render_rocq_option(record.snapshot.current),
-        render_rocq_list(&record.snapshot.runnable),
-        if record.snapshot.need_resched {
-            "true"
-        } else {
-            "false"
-        },
-        render_rocq_option(record.snapshot.dispatch_target),
-        render_rocq_option_list(&record.snapshot.worker_current),
-        render_rocq_bool_list(&record.snapshot.worker_need_resched),
-        render_rocq_option_list(&record.snapshot.worker_dispatch_target)
-    )
 }
 
 fn render_trace_rows_event(event: BaselineTraceEvent) -> (&'static str, Option<u32>, Option<u32>) {
@@ -620,6 +565,14 @@ pub fn render_trace_rows_artifact_lines() -> Vec<String> {
         .collect()
 }
 
+#[cfg(any(
+    test,
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 fn render_task_trace_kind(event: TaskTraceEvent) -> (&'static str, u32, Option<u32>) {
     match event {
         TaskTraceEvent::Spawn {
@@ -639,6 +592,14 @@ fn render_task_trace_kind(event: TaskTraceEvent) -> (&'static str, u32, Option<u
     }
 }
 
+#[cfg(any(
+    test,
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 fn render_task_trace_record(record: TaskTraceRecord) -> String {
     let (kind, subject, related) = render_task_trace_kind(record.event);
     format!(
@@ -649,36 +610,19 @@ fn render_task_trace_record(record: TaskTraceRecord) -> String {
     )
 }
 
+#[cfg(any(
+    test,
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 fn render_task_trace_artifact_lines() -> Vec<String> {
     task_trace_records()
         .into_iter()
         .map(render_task_trace_record)
         .collect()
-}
-
-fn render_rocq_handoff_artifact_lines() -> Vec<String> {
-    let records = records();
-    let mut lines = vec![
-        "From Stdlib Require Import List.".to_string(),
-        "From RocqSched Require Import Operational.Common.Step.".to_string(),
-        "From RocqSched Require Import Operational.Awkernel.Minimal.CapturedTraceSyntax."
-            .to_string(),
-        "Import ListNotations.".to_string(),
-        "".to_string(),
-        "Definition awk_generated_handoff_rows : list AwkernelSchedTraceEntry :=".to_string(),
-    ];
-
-    if records.is_empty() {
-        lines.push("  [ ].".to_string());
-        return lines;
-    }
-
-    for (idx, record) in records.into_iter().enumerate() {
-        let prefix = if idx == 0 { "  [ " } else { "  ; " };
-        lines.push(format!("{prefix}{}", render_rocq_row(record)));
-    }
-    lines.push("  ].".to_string());
-    lines
 }
 
 #[cfg(not(feature = "std"))]
@@ -702,19 +646,6 @@ pub fn dump_to_console() {
         console::print(&format!("{SERIAL_PREFIX} {line}\r\n"));
     }
     console::print(&format!("{SERIAL_DONE_MARKER}\r\n"));
-    #[cfg(feature = "handoff_trace_vm")]
-    {
-        console::print(&format!("{TRACE_ROWS_BEGIN_MARKER}\r\n"));
-        for line in render_trace_rows_artifact_lines() {
-            console::print(&format!("{line}\r\n"));
-        }
-        console::print(&format!("{TRACE_ROWS_END_MARKER}\r\n"));
-        console::print(&format!("{ROCQ_BEGIN_MARKER}\r\n"));
-        for line in render_rocq_handoff_artifact_lines() {
-            console::print(&format!("{line}\r\n"));
-        }
-        console::print(&format!("{ROCQ_END_MARKER}\r\n"));
-    }
     #[cfg(any(
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
@@ -733,11 +664,6 @@ pub fn dump_to_console() {
             console::print(&format!("{line}\r\n"));
         }
         console::print(&format!("{TASK_TRACE_END_MARKER}\r\n"));
-        console::print(&format!("{ROCQ_BEGIN_MARKER}\r\n"));
-        for line in render_rocq_handoff_artifact_lines() {
-            console::print(&format!("{line}\r\n"));
-        }
-        console::print(&format!("{ROCQ_END_MARKER}\r\n"));
     }
 }
 
@@ -840,52 +766,6 @@ mod tests {
         assert!(lines[0].contains("cpu=1"));
         assert!(lines[0].contains("event=EvDispatch"));
         assert!(lines[0].contains("current=Some(7)"));
-    }
-
-    #[test]
-    fn renders_rocq_handoff_artifact() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        reset();
-        record(
-            BaselineTraceEvent::Wakeup { task_id: 1 },
-            BaselineTraceSnapshot {
-                cpu_id: 0,
-                current: None,
-                runnable: vec![1],
-                need_resched: false,
-                dispatch_target: None,
-                worker_current: vec![None],
-                worker_need_resched: vec![false],
-                worker_dispatch_target: vec![None],
-            },
-        );
-        record(
-            BaselineTraceEvent::RequestResched { cpu_id: 1 },
-            BaselineTraceSnapshot {
-                cpu_id: 1,
-                current: None,
-                runnable: vec![1],
-                need_resched: true,
-                dispatch_target: None,
-                worker_current: vec![None],
-                worker_need_resched: vec![true],
-                worker_dispatch_target: vec![None],
-            },
-        );
-
-        let lines = render_rocq_handoff_artifact_lines();
-        assert_eq!(lines[0], "From Stdlib Require Import List.");
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("Definition awk_generated_handoff_rows")));
-        assert!(lines.iter().any(|line| line.contains(
-            "mkAwkernelSchedTraceEntry 0 (EvWakeup 1) None [1] false None [None] [false] [None]"
-        )));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("mkAwkernelSchedTraceEntry 1 (EvRequestResched 1) None [1] true None [None] [true] [None]"))
-        );
     }
 
     #[test]

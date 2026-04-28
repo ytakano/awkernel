@@ -13,7 +13,6 @@ extern crate alloc;
 use awkernel_async_lib::{scheduler::wake_task, task};
 #[cfg(not(any(
     feature = "baseline_trace_vm",
-    feature = "handoff_trace_vm",
     feature = "single_async_trace_vm",
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
@@ -68,9 +67,6 @@ fn main<Info: Debug>(kernel_info: KernelInfo<Info>) {
         #[cfg(feature = "baseline_trace_vm")]
         userland::install_baseline_trace_vm();
 
-        #[cfg(feature = "handoff_trace_vm")]
-        userland::install_handoff_trace_vm();
-
         #[cfg(feature = "single_async_trace_vm")]
         userland::install_single_async_trace_vm();
 
@@ -88,7 +84,6 @@ fn main<Info: Debug>(kernel_info: KernelInfo<Info>) {
 
         #[cfg(not(any(
             feature = "baseline_trace_vm",
-            feature = "handoff_trace_vm",
             feature = "single_async_trace_vm",
             feature = "nested_spawn_trace_vm",
             feature = "multi_async_trace_vm",

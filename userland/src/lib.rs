@@ -5,7 +5,6 @@ extern crate alloc;
 use alloc::borrow::Cow;
 #[cfg(any(
     feature = "baseline_trace_vm",
-    feature = "handoff_trace_vm",
     feature = "single_async_trace_vm",
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
@@ -17,7 +16,6 @@ use awkernel_async_lib::{scheduler::SchedulerType, task};
 pub async fn main() -> Result<(), Cow<'static, str>> {
     #[cfg(any(
         feature = "baseline_trace_vm",
-        feature = "handoff_trace_vm",
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
@@ -30,7 +28,6 @@ pub async fn main() -> Result<(), Cow<'static, str>> {
 
     #[cfg(not(any(
         feature = "baseline_trace_vm",
-        feature = "handoff_trace_vm",
         feature = "single_async_trace_vm",
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
@@ -95,19 +92,6 @@ pub fn install_baseline_trace_vm() {
 
     let task_id = task::spawn(
         "[Awkernel] baseline trace worker".into(),
-        async { Ok(()) },
-        SchedulerType::PrioritizedFIFO(31),
-    );
-
-    awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
-}
-
-#[cfg(feature = "handoff_trace_vm")]
-pub fn install_handoff_trace_vm() {
-    awkernel_async_lib::baseline_trace::reset();
-
-    let task_id = task::spawn(
-        "[Awkernel] handoff trace worker".into(),
         async { Ok(()) },
         SchedulerType::PrioritizedFIFO(31),
     );

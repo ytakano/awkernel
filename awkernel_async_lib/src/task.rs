@@ -267,22 +267,6 @@ fn record_baseline_runnable_projection(task_id: u32) {
     );
 }
 
-#[cfg(all(feature = "baseline_trace", feature = "handoff_trace_vm"))]
-fn record_baseline_request_resched(cpu_id: usize) {
-    baseline_trace::record(
-        BaselineTraceEvent::RequestResched { cpu_id },
-        baseline_snapshot(cpu_id, baseline_current_task_id(cpu_id), None, true, None),
-    );
-}
-
-#[cfg(all(feature = "baseline_trace", feature = "handoff_trace_vm"))]
-fn record_baseline_handle_resched(cpu_id: usize) {
-    baseline_trace::record(
-        BaselineTraceEvent::HandleResched { cpu_id },
-        baseline_snapshot(cpu_id, baseline_current_task_id(cpu_id), None, true, None),
-    );
-}
-
 #[cfg(feature = "baseline_trace")]
 pub(crate) struct BaselineDispatchProjection {
     dispatch: SchedAndTaskDispatchTraceRecord,
@@ -431,12 +415,6 @@ impl ArcWake for Task {
             scheduler::panicked::SCHEDULER.wake_task(self);
         } else {
             self.scheduler.wake_task(self);
-        }
-
-        #[cfg(feature = "handoff_trace_vm")]
-        {
-            PREEMPTION_REQUEST[1].store(true, Ordering::Release);
-            record_baseline_request_resched(1);
         }
 
         // Notify the primary CPU to wake up workers.
@@ -1089,13 +1067,6 @@ pub fn run_main() {
             while let Some(p) = pop_preemption_pending(cpu_id) {
                 p.scheduler.wake_task(p);
             }
-        }
-
-        #[cfg(feature = "handoff_trace_vm")]
-        if RUNNING[cpu_id].load(Ordering::Relaxed) == 0
-            && PREEMPTION_REQUEST[cpu_id].load(Ordering::Acquire)
-        {
-            record_baseline_handle_resched(cpu_id);
         }
 
         if let Some(scheduled_task) = get_next_task(true) {

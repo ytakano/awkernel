@@ -86,10 +86,6 @@ baseline_trace_vm = [
     "awkernel_async_lib/baseline_trace",
     "awkernel_async_lib/baseline_trace_vm",
 ]
-handoff_trace_vm = [
-    "awkernel_async_lib/baseline_trace",
-    "awkernel_async_lib/handoff_trace_vm",
-]
 single_async_trace_vm = [
     "awkernel_async_lib/baseline_trace",
     "awkernel_async_lib/single_async_trace_vm",
