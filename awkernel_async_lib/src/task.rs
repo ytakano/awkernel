@@ -55,6 +55,13 @@ use preempt::thread::PtrWorkerThreadContext;
 /// Return type of futures taken by `awkernel_async_lib::task::spawn`.
 pub type TaskResult = Result<(), Cow<'static, str>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GedfDeadlineHint {
+    pub logical_release_time: u64,
+    pub absolute_deadline: u64,
+    pub periodic_loop_index: Option<u64>,
+}
+
 static TASKS: Mutex<Tasks> = Mutex::new(Tasks::new()); // Set of tasks.
 static RUNNING: [AtomicU32; NUM_MAX_CPU] = array![_ => AtomicU32::new(0); NUM_MAX_CPU]; // IDs of running tasks.
 pub(crate) static MAX_TASK_PRIORITY: u64 = (1 << 56) - 1; // Maximum task priority.
@@ -166,6 +173,42 @@ pub(crate) fn record_current_task_unblock(
     let task_id = get_current_trace_task_id(awkernel_lib::cpu::cpu_id())?;
     record_task_unblock(task_id, wait_class, unblock_kind);
     Some(task_id)
+}
+
+#[cfg(feature = "baseline_trace")]
+pub(crate) fn record_current_periodic_job_complete(loop_index: u64) -> Option<u32> {
+    let task_id = get_current_trace_task_id(awkernel_lib::cpu::cpu_id())?;
+    record_workload_task_trace(TaskTraceEvent::PeriodicJobComplete {
+        task_id,
+        loop_index,
+    });
+    Some(task_id)
+}
+
+pub(crate) fn set_current_next_gedf_deadline_hint(hint: GedfDeadlineHint) -> bool {
+    let Some(task_id) = get_current_task(awkernel_lib::cpu::cpu_id()) else {
+        return false;
+    };
+    let Some(task) = get_task(task_id) else {
+        return false;
+    };
+    let mut node = MCSNode::new();
+    let mut info = task.info.lock(&mut node);
+    info.set_next_gedf_deadline_hint(hint);
+    true
+}
+
+pub(crate) fn clear_current_gedf_deadline_hint() -> bool {
+    let Some(task_id) = get_current_task(awkernel_lib::cpu::cpu_id()) else {
+        return false;
+    };
+    let Some(task) = get_task(task_id) else {
+        return false;
+    };
+    let mut node = MCSNode::new();
+    let mut info = task.info.lock(&mut node);
+    info.clear_current_gedf_deadline_hint();
+    true
 }
 
 #[cfg(feature = "baseline_trace")]
@@ -458,6 +501,8 @@ pub struct TaskInfo {
     pub(crate) num_preempt: u64,
     last_executed_time: awkernel_lib::time::Time,
     absolute_deadline: Option<u64>,
+    current_gedf_deadline_hint: Option<GedfDeadlineHint>,
+    next_gedf_deadline_hint: Option<GedfDeadlineHint>,
     need_sched: bool,
     pub(crate) need_preemption: bool,
     panicked: bool,
@@ -512,6 +557,26 @@ impl TaskInfo {
     #[inline(always)]
     pub fn update_absolute_deadline(&mut self, deadline: u64) {
         self.absolute_deadline = Some(deadline);
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_next_gedf_deadline_hint(&mut self, hint: GedfDeadlineHint) {
+        self.next_gedf_deadline_hint = Some(hint);
+    }
+
+    #[inline(always)]
+    pub(crate) fn promote_or_current_gedf_deadline_hint(&mut self) -> Option<GedfDeadlineHint> {
+        if let Some(hint) = self.next_gedf_deadline_hint.take() {
+            self.current_gedf_deadline_hint = Some(hint);
+            Some(hint)
+        } else {
+            self.current_gedf_deadline_hint
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn clear_current_gedf_deadline_hint(&mut self) {
+        self.current_gedf_deadline_hint = None;
     }
 
     #[inline(always)]
@@ -599,6 +664,8 @@ impl Tasks {
                     num_preempt: 0,
                     last_executed_time: awkernel_lib::time::Time::now(),
                     absolute_deadline: None,
+                    current_gedf_deadline_hint: None,
+                    next_gedf_deadline_hint: None,
                     need_sched: false,
                     need_preemption: false,
                     panicked: false,
@@ -730,6 +797,16 @@ pub(crate) fn spawn_with_ids(
     sched_type: SchedulerType,
     dag_info: Option<DagInfo>,
 ) -> SpawnedTask {
+    spawn_with_ids_and_gedf_hint(name, future, sched_type, dag_info, None)
+}
+
+pub(crate) fn spawn_with_ids_and_gedf_hint(
+    name: Cow<'static, str>,
+    future: impl Future<Output = TaskResult> + 'static + Send,
+    sched_type: SchedulerType,
+    dag_info: Option<DagInfo>,
+    initial_gedf_hint: Option<GedfDeadlineHint>,
+) -> SpawnedTask {
     if let SchedulerType::PrioritizedFIFO(p) | SchedulerType::PrioritizedRR(p) = sched_type {
         if p > HIGHEST_PRIORITY {
             log::warn!(
@@ -751,6 +828,11 @@ pub(crate) fn spawn_with_ids(
     #[cfg(feature = "baseline_trace")]
     let child_trace_task_id = spawned.trace_task_id;
     let task = tasks.id_to_task.get(&id).cloned();
+    if let (Some(task), Some(hint)) = (task.as_ref(), initial_gedf_hint) {
+        let mut node = MCSNode::new();
+        let mut info = task.info.lock(&mut node);
+        info.set_next_gedf_deadline_hint(hint);
+    }
     drop(tasks);
 
     #[cfg(feature = "baseline_trace")]

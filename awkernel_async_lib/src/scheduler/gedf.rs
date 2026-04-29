@@ -72,39 +72,55 @@ impl Scheduler for GEDFScheduler {
             match info.scheduler_type {
                 SchedulerType::GEDF(relative_deadline) => {
                     let wake_time = awkernel_lib::delay::uptime();
-                    let absolute_deadline = if let Some(ref dag_info) = dag_info {
+                    let hint = if dag_info.is_none() {
+                        info.promote_or_current_gedf_deadline_hint()
+                    } else {
+                        None
+                    };
+                    let absolute_deadline = if let Some(hint) = hint {
+                        hint.absolute_deadline
+                    } else if let Some(ref dag_info) = dag_info {
                         calculate_and_update_dag_deadline(dag_info, wake_time)
                     } else {
                         // If dag_info is not present, the task is treated as a regular task, and
                         // the absolute_deadline is calculated using the scheduler's relative_deadline.
                         wake_time + relative_deadline
                     };
+                    let trace_wake_time = hint
+                        .map(|hint| hint.logical_release_time)
+                        .unwrap_or(wake_time);
 
                     task.priority
                         .update_priority_info(self.priority, MAX_TASK_PRIORITY - absolute_deadline);
                     info.update_absolute_deadline(absolute_deadline);
 
                     #[cfg(feature = "baseline_trace")]
-                    let emit_runnable_deadline = dag_info
-                        .is_none()
-                        .then_some((info.get_trace_task_id(), relative_deadline));
+                    let emit_runnable_deadline = dag_info.is_none().then_some((
+                        info.get_trace_task_id(),
+                        relative_deadline,
+                        trace_wake_time,
+                        hint.and_then(|hint| hint.periodic_loop_index),
+                    ));
 
                     #[cfg(not(feature = "baseline_trace"))]
                     let emit_runnable_deadline = ();
 
-                    (wake_time, absolute_deadline, emit_runnable_deadline)
+                    (trace_wake_time, absolute_deadline, emit_runnable_deadline)
                 }
                 _ => unreachable!(),
             }
         };
 
         #[cfg(feature = "baseline_trace")]
-        if let Some((task_id, relative_deadline)) = _emit_runnable_deadline {
+        if let Some((task_id, relative_deadline, wake_time, periodic_loop_index)) =
+            _emit_runnable_deadline
+        {
             baseline_trace::record_task_trace(TaskTraceEvent::RunnableDeadline {
                 task_id,
                 relative_deadline,
                 wake_time,
                 absolute_deadline,
+                periodic_loop_index,
             });
         }
 

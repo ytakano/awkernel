@@ -18,6 +18,7 @@ pub mod future;
 mod join_handle;
 pub mod net;
 mod never_return;
+pub mod periodic_task;
 pub mod pubsub;
 pub mod scheduler;
 pub mod service;
@@ -48,6 +49,9 @@ pub use futures::select_biased;
 pub use awkernel_lib::{
     cpu::cpu_id,
     delay::{cpu_counter, uptime, uptime_nano},
+};
+pub use periodic_task::{
+    spawn_periodic_task, PeriodicJobContext, PeriodicTaskError, PeriodicTaskSpec,
 };
 
 use pubsub::{
@@ -128,6 +132,10 @@ pub trait Cancel: Future + Unpin {
 /// ```
 pub async fn sleep(duration: Duration) -> sleep_task::State {
     sleep_task::Sleep::new(duration).await
+}
+
+pub(crate) async fn sleep_untraced(duration: Duration) -> sleep_task::State {
+    sleep_task::Sleep::new_untraced(duration).await
 }
 
 /// Yield the CPU to the next executable task.

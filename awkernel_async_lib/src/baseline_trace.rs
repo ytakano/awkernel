@@ -72,6 +72,7 @@ pub enum TaskTraceEvent {
         relative_deadline: u64,
         wake_time: u64,
         absolute_deadline: u64,
+        periodic_loop_index: Option<u64>,
     },
     Choose {
         task_id: u32,
@@ -94,6 +95,10 @@ pub enum TaskTraceEvent {
     },
     JoinTargetReady {
         task_id: u32,
+    },
+    PeriodicJobComplete {
+        task_id: u32,
+        loop_index: u64,
     },
     Complete {
         task_id: u32,
@@ -619,6 +624,9 @@ fn render_task_trace_kind(
         TaskTraceEvent::JoinTargetReady { task_id } => {
             ("JoinTargetReady", task_id, None, None, None, None)
         }
+        TaskTraceEvent::PeriodicJobComplete { task_id, .. } => {
+            ("PeriodicJobComplete", task_id, None, None, None, None)
+        }
         TaskTraceEvent::Complete { task_id } => ("Complete", task_id, None, None, None, None),
     }
 }
@@ -629,11 +637,28 @@ fn render_task_trace_record(record: TaskTraceRecord) -> String {
         relative_deadline,
         wake_time,
         absolute_deadline,
+        periodic_loop_index,
+    } = record.event
+    {
+        let mut row = format!(
+            "{}\tRunnableDeadline\t{}\t-\t-\t-\tGlobalEDF\t{}\t{}\t{}",
+            record.event_id, task_id, relative_deadline, wake_time, absolute_deadline
+        );
+        if let Some(loop_index) = periodic_loop_index {
+            row.push('\t');
+            row.push_str(&loop_index.to_string());
+        }
+        return row;
+    }
+
+    if let TaskTraceEvent::PeriodicJobComplete {
+        task_id,
+        loop_index,
     } = record.event
     {
         return format!(
-            "{}\tRunnableDeadline\t{}\t-\t-\t-\tGlobalEDF\t{}\t{}\t{}",
-            record.event_id, task_id, relative_deadline, wake_time, absolute_deadline
+            "{}\tPeriodicJobComplete\t{}\t-\t-\t-\t-\t-\t{}",
+            record.event_id, task_id, loop_index
         );
     }
 
@@ -986,6 +1011,7 @@ mod tests {
             relative_deadline: 100,
             wake_time: 23,
             absolute_deadline: 123,
+            periodic_loop_index: None,
         });
 
         let lines = render_task_trace_artifact_lines();
@@ -1018,6 +1044,7 @@ mod tests {
             relative_deadline: 100,
             wake_time: 23,
             absolute_deadline: 123,
+            periodic_loop_index: None,
         });
 
         let lines = render_task_trace_artifact_lines();
@@ -1032,6 +1059,34 @@ mod tests {
         assert_eq!(lines[0].split('\t').count(), 8);
         assert_eq!(lines[1].split('\t').count(), 8);
         assert_eq!(lines[2].split('\t').count(), 10);
+    }
+
+    #[test]
+    fn periodic_runnable_deadline_and_complete_render_loop_index() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        set_workload_artifact_enabled(true);
+
+        record_task_trace(TaskTraceEvent::RunnableDeadline {
+            task_id: 7,
+            relative_deadline: 100,
+            wake_time: 23,
+            absolute_deadline: 123,
+            periodic_loop_index: Some(4),
+        });
+        record_task_trace(TaskTraceEvent::PeriodicJobComplete {
+            task_id: 7,
+            loop_index: 4,
+        });
+
+        let lines = render_task_trace_artifact_lines();
+        assert_eq!(
+            lines,
+            vec![
+                "0\tRunnableDeadline\t7\t-\t-\t-\tGlobalEDF\t100\t23\t123\t4",
+                "1\tPeriodicJobComplete\t7\t-\t-\t-\t-\t-\t4"
+            ]
+        );
     }
 
     #[test]
