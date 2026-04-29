@@ -62,6 +62,7 @@ pub enum TaskTraceEvent {
     Spawn {
         parent_task_id: Option<u32>,
         child_task_id: u32,
+        policy: TaskTracePolicy,
     },
     Runnable {
         task_id: u32,
@@ -91,6 +92,31 @@ pub enum TaskTraceEvent {
     Complete {
         task_id: u32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskTracePolicy {
+    GlobalEdf { relative_deadline: u64 },
+    PrioritizedFifo { priority: u8 },
+    PrioritizedRr { priority: u8 },
+    Panicked,
+}
+
+impl TaskTracePolicy {
+    pub(crate) fn from_scheduler_type(scheduler_type: crate::scheduler::SchedulerType) -> Self {
+        match scheduler_type {
+            crate::scheduler::SchedulerType::GEDF(relative_deadline) => {
+                Self::GlobalEdf { relative_deadline }
+            }
+            crate::scheduler::SchedulerType::PrioritizedFIFO(priority) => {
+                Self::PrioritizedFifo { priority }
+            }
+            crate::scheduler::SchedulerType::PrioritizedRR(priority) => {
+                Self::PrioritizedRr { priority }
+            }
+            crate::scheduler::SchedulerType::Panicked => Self::Panicked,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,6 +545,17 @@ fn render_unblock_kind(unblock_kind: UnblockKind) -> &'static str {
     }
 }
 
+fn render_task_policy(policy: TaskTracePolicy) -> (&'static str, String) {
+    match policy {
+        TaskTracePolicy::GlobalEdf { relative_deadline } => {
+            ("GlobalEDF", relative_deadline.to_string())
+        }
+        TaskTracePolicy::PrioritizedFifo { priority } => ("PrioritizedFIFO", priority.to_string()),
+        TaskTracePolicy::PrioritizedRr { priority } => ("PrioritizedRR", priority.to_string()),
+        TaskTracePolicy::Panicked => ("Panicked", "-".to_string()),
+    }
+}
+
 fn render_task_trace_kind(
     event: TaskTraceEvent,
 ) -> (
@@ -527,19 +564,28 @@ fn render_task_trace_kind(
     Option<u32>,
     Option<WaitClass>,
     Option<UnblockKind>,
+    Option<TaskTracePolicy>,
 ) {
     match event {
         TaskTraceEvent::Spawn {
             parent_task_id,
             child_task_id,
-        } => ("Spawn", child_task_id, parent_task_id, None, None),
-        TaskTraceEvent::Runnable { task_id } => ("Runnable", task_id, None, None, None),
-        TaskTraceEvent::Choose { task_id } => ("Choose", task_id, None, None, None),
-        TaskTraceEvent::Dispatch { task_id } => ("Dispatch", task_id, None, None, None),
+            policy,
+        } => (
+            "Spawn",
+            child_task_id,
+            parent_task_id,
+            None,
+            None,
+            Some(policy),
+        ),
+        TaskTraceEvent::Runnable { task_id } => ("Runnable", task_id, None, None, None, None),
+        TaskTraceEvent::Choose { task_id } => ("Choose", task_id, None, None, None, None),
+        TaskTraceEvent::Dispatch { task_id } => ("Dispatch", task_id, None, None, None, None),
         TaskTraceEvent::Block {
             task_id,
             wait_class,
-        } => ("Block", task_id, None, Some(wait_class), None),
+        } => ("Block", task_id, None, Some(wait_class), None, None),
         TaskTraceEvent::Unblock {
             task_id,
             wait_class,
@@ -550,28 +596,42 @@ fn render_task_trace_kind(
             None,
             Some(wait_class),
             Some(unblock_kind),
+            None,
         ),
         TaskTraceEvent::JoinWait {
             waiter_task_id,
             child_task_id,
-        } => ("JoinWait", waiter_task_id, Some(child_task_id), None, None),
+        } => (
+            "JoinWait",
+            waiter_task_id,
+            Some(child_task_id),
+            None,
+            None,
+            None,
+        ),
         TaskTraceEvent::JoinTargetReady { task_id } => {
-            ("JoinTargetReady", task_id, None, None, None)
+            ("JoinTargetReady", task_id, None, None, None, None)
         }
-        TaskTraceEvent::Complete { task_id } => ("Complete", task_id, None, None, None),
+        TaskTraceEvent::Complete { task_id } => ("Complete", task_id, None, None, None, None),
     }
 }
 
 fn render_task_trace_record(record: TaskTraceRecord) -> String {
-    let (kind, subject, related, wait_class, unblock_kind) = render_task_trace_kind(record.event);
+    let (kind, subject, related, wait_class, unblock_kind, policy) =
+        render_task_trace_kind(record.event);
+    let (policy_name, policy_param) = policy
+        .map(render_task_policy)
+        .unwrap_or(("-", "-".to_string()));
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         record.event_id,
         kind,
         subject,
         render_trace_rows_option(related),
         wait_class.map(render_wait_class).unwrap_or("-"),
-        unblock_kind.map(render_unblock_kind).unwrap_or("-")
+        unblock_kind.map(render_unblock_kind).unwrap_or("-"),
+        policy_name,
+        policy_param
     )
 }
 
@@ -859,9 +919,38 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "0\tChoose\t7\t-\t-\t-",
-                "1\tDispatch\t7\t-\t-\t-",
-                "2\tRunnable\t42\t-\t-\t-"
+                "0\tChoose\t7\t-\t-\t-\t-\t-",
+                "1\tDispatch\t7\t-\t-\t-\t-\t-",
+                "2\tRunnable\t42\t-\t-\t-\t-\t-"
+            ]
+        );
+    }
+
+    #[test]
+    fn spawn_renders_policy_metadata() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        set_workload_artifact_enabled(true);
+
+        record_task_trace(TaskTraceEvent::Spawn {
+            parent_task_id: Some(1),
+            child_task_id: 2,
+            policy: TaskTracePolicy::PrioritizedFifo { priority: 31 },
+        });
+        record_task_trace(TaskTraceEvent::Spawn {
+            parent_task_id: None,
+            child_task_id: 3,
+            policy: TaskTracePolicy::GlobalEdf {
+                relative_deadline: 100,
+            },
+        });
+
+        let lines = render_task_trace_artifact_lines();
+        assert_eq!(
+            lines,
+            vec![
+                "0\tSpawn\t2\t1\t-\t-\tPrioritizedFIFO\t31",
+                "1\tSpawn\t3\t-\t-\t-\tGlobalEDF\t100"
             ]
         );
     }
@@ -875,7 +964,7 @@ mod tests {
         record_task_trace(TaskTraceEvent::JoinTargetReady { task_id: 42 });
 
         let lines = render_task_trace_artifact_lines();
-        assert_eq!(lines, vec!["0\tJoinTargetReady\t42\t-\t-\t-"]);
+        assert_eq!(lines, vec!["0\tJoinTargetReady\t42\t-\t-\t-\t-\t-"]);
     }
 
     #[test]
@@ -898,8 +987,8 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "0\tBlock\t42\t-\tSleep\t-",
-                "1\tUnblock\t42\t-\tIo\tTimeout"
+                "0\tBlock\t42\t-\tSleep\t-\t-\t-",
+                "1\tUnblock\t42\t-\tIo\tTimeout\t-\t-"
             ]
         );
     }

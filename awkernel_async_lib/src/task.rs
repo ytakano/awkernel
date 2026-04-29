@@ -41,7 +41,7 @@ use crate::baseline_trace::{
 };
 
 #[cfg(feature = "baseline_trace")]
-use crate::baseline_trace::{TaskTraceEvent, UnblockKind, WaitClass};
+use crate::baseline_trace::{TaskTraceEvent, TaskTracePolicy, UnblockKind, WaitClass};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -752,6 +752,7 @@ pub(crate) fn spawn_with_ids(
         record_workload_task_trace(TaskTraceEvent::Spawn {
             parent_task_id,
             child_task_id: child_trace_task_id,
+            policy: TaskTracePolicy::from_scheduler_type(sched_type),
         });
     }
 
