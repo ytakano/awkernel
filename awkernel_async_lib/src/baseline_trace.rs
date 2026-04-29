@@ -67,6 +67,12 @@ pub enum TaskTraceEvent {
     Runnable {
         task_id: u32,
     },
+    RunnableDeadline {
+        task_id: u32,
+        relative_deadline: u64,
+        wake_time: u64,
+        absolute_deadline: u64,
+    },
     Choose {
         task_id: u32,
     },
@@ -580,6 +586,7 @@ fn render_task_trace_kind(
             Some(policy),
         ),
         TaskTraceEvent::Runnable { task_id } => ("Runnable", task_id, None, None, None, None),
+        TaskTraceEvent::RunnableDeadline { .. } => unreachable!(),
         TaskTraceEvent::Choose { task_id } => ("Choose", task_id, None, None, None, None),
         TaskTraceEvent::Dispatch { task_id } => ("Dispatch", task_id, None, None, None, None),
         TaskTraceEvent::Block {
@@ -617,6 +624,19 @@ fn render_task_trace_kind(
 }
 
 fn render_task_trace_record(record: TaskTraceRecord) -> String {
+    if let TaskTraceEvent::RunnableDeadline {
+        task_id,
+        relative_deadline,
+        wake_time,
+        absolute_deadline,
+    } = record.event
+    {
+        return format!(
+            "{}\tRunnableDeadline\t{}\t-\t-\t-\tGlobalEDF\t{}\t{}\t{}",
+            record.event_id, task_id, relative_deadline, wake_time, absolute_deadline
+        );
+    }
+
     let (kind, subject, related, wait_class, unblock_kind, policy) =
         render_task_trace_kind(record.event);
     let (policy_name, policy_param) = policy
@@ -953,6 +973,65 @@ mod tests {
                 "1\tSpawn\t3\t-\t-\t-\tGlobalEDF\t100"
             ]
         );
+    }
+
+    #[test]
+    fn runnable_deadline_renders_exact_deadline_metadata() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        set_workload_artifact_enabled(true);
+
+        record_task_trace(TaskTraceEvent::RunnableDeadline {
+            task_id: 7,
+            relative_deadline: 100,
+            wake_time: 23,
+            absolute_deadline: 123,
+        });
+
+        let lines = render_task_trace_artifact_lines();
+        assert_eq!(
+            lines,
+            vec!["0\tRunnableDeadline\t7\t-\t-\t-\tGlobalEDF\t100\t23\t123"]
+        );
+    }
+
+    #[test]
+    fn spawn_and_runnable_deadline_rows_coexist_with_original_widths() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        set_workload_artifact_enabled(true);
+
+        record_task_trace(TaskTraceEvent::Spawn {
+            parent_task_id: Some(1),
+            child_task_id: 2,
+            policy: TaskTracePolicy::PrioritizedFifo { priority: 31 },
+        });
+        record_task_trace(TaskTraceEvent::Spawn {
+            parent_task_id: None,
+            child_task_id: 3,
+            policy: TaskTracePolicy::GlobalEdf {
+                relative_deadline: 100,
+            },
+        });
+        record_task_trace(TaskTraceEvent::RunnableDeadline {
+            task_id: 3,
+            relative_deadline: 100,
+            wake_time: 23,
+            absolute_deadline: 123,
+        });
+
+        let lines = render_task_trace_artifact_lines();
+        assert_eq!(
+            lines,
+            vec![
+                "0\tSpawn\t2\t1\t-\t-\tPrioritizedFIFO\t31",
+                "1\tSpawn\t3\t-\t-\t-\tGlobalEDF\t100",
+                "2\tRunnableDeadline\t3\t-\t-\t-\tGlobalEDF\t100\t23\t123"
+            ]
+        );
+        assert_eq!(lines[0].split('\t').count(), 8);
+        assert_eq!(lines[1].split('\t').count(), 8);
+        assert_eq!(lines[2].split('\t').count(), 10);
     }
 
     #[test]

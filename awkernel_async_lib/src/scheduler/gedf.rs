@@ -3,6 +3,8 @@
 use core::cmp::max;
 
 use super::{Scheduler, SchedulerType, Task};
+#[cfg(feature = "baseline_trace")]
+use crate::baseline_trace::{self, TaskTraceEvent};
 use crate::{
     dag::{get_dag, get_dag_absolute_deadline, set_dag_absolute_deadline, to_node_index},
     scheduler::GLOBAL_WAKE_GET_MUTEX,
@@ -63,7 +65,7 @@ impl GEDFData {
 
 impl Scheduler for GEDFScheduler {
     fn wake_task(&self, task: Arc<Task>) {
-        let (wake_time, absolute_deadline) = {
+        let (wake_time, absolute_deadline, _emit_runnable_deadline) = {
             let mut node_inner = MCSNode::new();
             let mut info = task.info.lock(&mut node_inner);
             let dag_info = info.get_dag_info();
@@ -82,11 +84,29 @@ impl Scheduler for GEDFScheduler {
                         .update_priority_info(self.priority, MAX_TASK_PRIORITY - absolute_deadline);
                     info.update_absolute_deadline(absolute_deadline);
 
-                    (wake_time, absolute_deadline)
+                    #[cfg(feature = "baseline_trace")]
+                    let emit_runnable_deadline = dag_info
+                        .is_none()
+                        .then_some((info.get_trace_task_id(), relative_deadline));
+
+                    #[cfg(not(feature = "baseline_trace"))]
+                    let emit_runnable_deadline = ();
+
+                    (wake_time, absolute_deadline, emit_runnable_deadline)
                 }
                 _ => unreachable!(),
             }
         };
+
+        #[cfg(feature = "baseline_trace")]
+        if let Some((task_id, relative_deadline)) = _emit_runnable_deadline {
+            baseline_trace::record_task_trace(TaskTraceEvent::RunnableDeadline {
+                task_id,
+                relative_deadline,
+                wake_time,
+                absolute_deadline,
+            });
+        }
 
         let mut node = MCSNode::new();
         let _guard = GLOBAL_WAKE_GET_MUTEX.lock(&mut node);

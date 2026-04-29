@@ -533,6 +533,12 @@ impl TaskInfo {
     pub fn get_dag_info(&self) -> Option<DagInfo> {
         self.dag_info.clone()
     }
+
+    #[cfg(feature = "baseline_trace")]
+    #[inline(always)]
+    pub(crate) fn get_trace_task_id(&self) -> u32 {
+        self.trace_task_id
+    }
 }
 
 /// State of task.
