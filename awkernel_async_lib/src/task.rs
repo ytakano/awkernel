@@ -176,11 +176,17 @@ pub(crate) fn record_current_task_unblock(
 }
 
 #[cfg(feature = "baseline_trace")]
-pub(crate) fn record_current_periodic_job_complete(loop_index: u64) -> Option<u32> {
+pub(crate) fn record_current_periodic_job_complete(
+    loop_index: u64,
+    actual_release_time_us: u64,
+    execution_time_us: u64,
+) -> Option<u32> {
     let task_id = get_current_trace_task_id(awkernel_lib::cpu::cpu_id())?;
     record_workload_task_trace(TaskTraceEvent::PeriodicJobComplete {
         task_id,
         loop_index,
+        actual_release_time_us,
+        execution_time_us,
     });
     Some(task_id)
 }

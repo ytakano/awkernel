@@ -71,7 +71,7 @@ impl Scheduler for GEDFScheduler {
             let dag_info = info.get_dag_info();
             match info.scheduler_type {
                 SchedulerType::GEDF(relative_deadline) => {
-                    let wake_time = awkernel_lib::delay::uptime();
+                    let wake_time = awkernel_lib::time::Time::now().uptime().as_micros() as u64;
                     let hint = if dag_info.is_none() {
                         info.promote_or_current_gedf_deadline_hint()
                     } else {

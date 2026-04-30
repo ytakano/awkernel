@@ -99,6 +99,8 @@ pub enum TaskTraceEvent {
     PeriodicJobComplete {
         task_id: u32,
         loop_index: u64,
+        actual_release_time_us: u64,
+        execution_time_us: u64,
     },
     Complete {
         task_id: u32,
@@ -654,11 +656,13 @@ fn render_task_trace_record(record: TaskTraceRecord) -> String {
     if let TaskTraceEvent::PeriodicJobComplete {
         task_id,
         loop_index,
+        actual_release_time_us,
+        execution_time_us,
     } = record.event
     {
         return format!(
-            "{}\tPeriodicJobComplete\t{}\t-\t-\t-\t-\t-\t{}",
-            record.event_id, task_id, loop_index
+            "{}\tPeriodicJobComplete\t{}\t-\t-\t-\t-\t-\t{}\t{}\t{}",
+            record.event_id, task_id, loop_index, actual_release_time_us, execution_time_us
         );
     }
 
@@ -1080,6 +1084,8 @@ mod tests {
         record_task_trace(TaskTraceEvent::PeriodicJobComplete {
             task_id: 7,
             loop_index: 4,
+            actual_release_time_us: 130,
+            execution_time_us: 50,
         });
 
         let lines = render_task_trace_artifact_lines();
@@ -1087,7 +1093,7 @@ mod tests {
             lines,
             vec![
                 "0\tRunnableDeadline\t7\t-\t-\t-\tGlobalEDF\t100\t23\t123\t4",
-                "1\tPeriodicJobComplete\t7\t-\t-\t-\t-\t-\t4"
+                "1\tPeriodicJobComplete\t7\t-\t-\t-\t-\t-\t4\t130\t50"
             ]
         );
     }

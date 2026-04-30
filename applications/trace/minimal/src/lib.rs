@@ -38,7 +38,7 @@ use awkernel_async_lib::task::TaskResult;
 use awkernel_async_lib::{scheduler::SchedulerType, spawn};
 #[cfg(feature = "periodic_trace_vm")]
 use awkernel_async_lib::{
-    spawn_periodic_task_controlled, PeriodicJobDisposition, PeriodicTaskSpec,
+    spawn_periodic_task_controlled, uptime, PeriodicJobDisposition, PeriodicTaskSpec,
 };
 #[cfg(any(
     feature = "sleep_wakeup_trace_vm",
@@ -153,6 +153,16 @@ pub async fn run_sleep_wakeup() -> TaskResult {
 
 #[cfg(feature = "periodic_trace_vm")]
 const PERIODIC_TRACE_JOBS: u64 = 10;
+#[cfg(feature = "periodic_trace_vm")]
+const PERIODIC_TRACE_BUSY_WORKLOAD_US: u64 = 50_000;
+
+#[cfg(feature = "periodic_trace_vm")]
+fn run_periodic_trace_busy_workload() {
+    let start = uptime();
+    while uptime().saturating_sub(start) < PERIODIC_TRACE_BUSY_WORKLOAD_US {
+        core::hint::spin_loop();
+    }
+}
 
 #[cfg(feature = "periodic_trace_vm")]
 pub fn spawn_periodic_trace() -> Result<u32, Cow<'static, str>> {
@@ -163,6 +173,8 @@ pub fn spawn_periodic_trace() -> Result<u32, Cow<'static, str>> {
         "[Awkernel] periodic trace worker".into(),
         spec,
         |context| async move {
+            run_periodic_trace_busy_workload();
+
             if context.loop_index + 1 >= PERIODIC_TRACE_JOBS {
                 Ok(PeriodicJobDisposition::Complete)
             } else {

@@ -10,11 +10,13 @@
 //! periodic job sequence without allocating a new runtime task for every job.
 //!
 //! When the `baseline_trace` feature is enabled, each periodic release can be
-//! emitted as a loop-indexed `RunnableDeadline` row, and each completed
-//! iteration is emitted as `PeriodicJobComplete(task, loop_index)`. These rows
-//! are adapter-local trace evidence; the common scheduling model still treats
-//! time as discrete values and does not depend on Awkernel's concrete timer
-//! source.
+//! emitted as a loop-indexed `RunnableDeadline` row with a logical `wake_time`,
+//! and each completed iteration is emitted as
+//! `PeriodicJobComplete(task, loop_index, actual_release_time_us,
+//! execution_time_us)`. The completion timing columns are concrete runtime
+//! observations around the job body; they are adapter-local trace evidence. The
+//! common scheduling model still treats time as discrete values and does not
+//! depend on Awkernel's concrete timer source.
 
 use crate::{
     scheduler::SchedulerType,
@@ -238,10 +240,19 @@ where
                 relative_deadline: spec.relative_deadline,
             };
 
+            #[cfg(feature = "baseline_trace")]
+            let actual_release_time_us = awkernel_lib::delay::uptime();
             let disposition = job(context).await;
+            #[cfg(feature = "baseline_trace")]
+            let execution_time_us =
+                awkernel_lib::delay::uptime().saturating_sub(actual_release_time_us);
 
             #[cfg(feature = "baseline_trace")]
-            task::record_current_periodic_job_complete(loop_index);
+            task::record_current_periodic_job_complete(
+                loop_index,
+                actual_release_time_us,
+                execution_time_us,
+            );
 
             task::clear_current_gedf_deadline_hint();
 
