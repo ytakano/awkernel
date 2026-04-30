@@ -76,6 +76,16 @@ pub enum PeriodicTaskError {
     DurationOverflow,
 }
 
+/// Decision returned by a controlled periodic job body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodicJobDisposition {
+    /// Continue with the next logical periodic job.
+    Continue,
+
+    /// Complete the periodic runtime task after the current logical job.
+    Complete,
+}
+
 impl PeriodicTaskSpec {
     /// Builds a validated periodic task specification.
     ///
@@ -184,6 +194,30 @@ where
     F: FnMut(PeriodicJobContext) -> Fut + Send + 'static,
     Fut: Future<Output = TaskResult> + Send + 'static,
 {
+    spawn_periodic_task_controlled(name, spec, move |context| {
+        let future = job(context);
+        async move {
+            future.await?;
+            Ok(PeriodicJobDisposition::Continue)
+        }
+    })
+}
+
+/// Spawns a periodic GEDF task whose job body can stop the periodic loop.
+///
+/// This is useful for trace workloads and tests that need a finite periodic
+/// sequence. `PeriodicJobDisposition::Complete` completes the runtime task
+/// after the current logical job has emitted its `PeriodicJobComplete` trace
+/// row.
+pub fn spawn_periodic_task_controlled<F, Fut>(
+    name: Cow<'static, str>,
+    spec: PeriodicTaskSpec,
+    mut job: F,
+) -> Result<u32, PeriodicTaskError>
+where
+    F: FnMut(PeriodicJobContext) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<PeriodicJobDisposition, Cow<'static, str>>> + Send + 'static,
+{
     let period_us = spec.period_us()?;
     let relative_deadline_us = spec.relative_deadline_us()?;
     let first_release_time_us = awkernel_lib::delay::uptime();
@@ -204,15 +238,16 @@ where
                 relative_deadline: spec.relative_deadline,
             };
 
-            let result = job(context).await;
+            let disposition = job(context).await;
 
             #[cfg(feature = "baseline_trace")]
             task::record_current_periodic_job_complete(loop_index);
 
             task::clear_current_gedf_deadline_hint();
 
-            if let Err(err) = result {
-                return Err(err);
+            match disposition? {
+                PeriodicJobDisposition::Continue => {}
+                PeriodicJobDisposition::Complete => return Ok(()),
             }
 
             loop_index = loop_index
@@ -264,5 +299,13 @@ mod tests {
         assert_eq!(hint.logical_release_time, 10);
         assert_eq!(hint.absolute_deadline, 15);
         assert_eq!(hint.periodic_loop_index, Some(3));
+    }
+
+    #[test]
+    fn periodic_job_disposition_values_are_distinct() {
+        assert_ne!(
+            PeriodicJobDisposition::Continue,
+            PeriodicJobDisposition::Complete
+        );
     }
 }

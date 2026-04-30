@@ -200,12 +200,13 @@ WORKLOAD_TRACE_FEATURE_nested_spawn=userland/nested_spawn_trace_vm
 WORKLOAD_TRACE_FEATURE_multi_async=userland/multi_async_trace_vm
 WORKLOAD_TRACE_FEATURE_sleep_wakeup=userland/sleep_wakeup_trace_vm
 WORKLOAD_TRACE_FEATURE_generic_random=userland/generic_trace_vm
+WORKLOAD_TRACE_FEATURE_periodic=userland/periodic_trace_vm
 WORKLOAD_TRACE_FEATURE=$(WORKLOAD_TRACE_FEATURE_$(WORKLOAD_SCENARIO))
 WORKLOAD_TRACE_QEMU_LOG=/tmp/awkernel_qemu_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_KVM_LOG=/tmp/awkernel_kvm_2cpu_$(WORKLOAD_SCENARIO).log
 WORKLOAD_TRACE_TIMEOUT ?= 120s
 GENERIC_TRACE_SEED ?=
-WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup generic_random
+WORKLOAD_SCENARIOS=single_async nested_spawn multi_async sleep_wakeup generic_random periodic
 
 QEMU_X86_NET_ARGS=$(QEMU_X86_ARGS)
 QEMU_X86_NET_ARGS+= -netdev user,id=net0,hostfwd=udp::4445-:2000

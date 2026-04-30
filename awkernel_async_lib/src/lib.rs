@@ -51,7 +51,8 @@ pub use awkernel_lib::{
     delay::{cpu_counter, uptime, uptime_nano},
 };
 pub use periodic_task::{
-    spawn_periodic_task, PeriodicJobContext, PeriodicTaskError, PeriodicTaskSpec,
+    spawn_periodic_task, spawn_periodic_task_controlled, PeriodicJobContext,
+    PeriodicJobDisposition, PeriodicTaskError, PeriodicTaskSpec,
 };
 
 use pubsub::{

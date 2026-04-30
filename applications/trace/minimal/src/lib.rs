@@ -6,7 +6,8 @@ extern crate alloc;
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
     feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
+    feature = "generic_trace_vm",
+    feature = "periodic_trace_vm"
 ))]
 use alloc::borrow::Cow;
 #[cfg(feature = "generic_trace_vm")]
@@ -20,6 +21,13 @@ use alloc::{boxed::Box, vec::Vec};
 use awkernel_async_lib::r#yield;
 #[cfg(any(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm"))]
 use awkernel_async_lib::sleep;
+#[cfg(any(
+    feature = "single_async_trace_vm",
+    feature = "nested_spawn_trace_vm",
+    feature = "multi_async_trace_vm",
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm"
+))]
 use awkernel_async_lib::task::TaskResult;
 #[cfg(any(
     feature = "nested_spawn_trace_vm",
@@ -28,7 +36,15 @@ use awkernel_async_lib::task::TaskResult;
     feature = "generic_trace_vm"
 ))]
 use awkernel_async_lib::{scheduler::SchedulerType, spawn};
-#[cfg(any(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm"))]
+#[cfg(feature = "periodic_trace_vm")]
+use awkernel_async_lib::{
+    spawn_periodic_task_controlled, PeriodicJobDisposition, PeriodicTaskSpec,
+};
+#[cfg(any(
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm",
+    feature = "periodic_trace_vm"
+))]
 use core::time::Duration;
 #[cfg(feature = "generic_trace_vm")]
 use core::{future::Future, pin::Pin};
@@ -133,6 +149,28 @@ pub async fn run_sleep_wakeup() -> TaskResult {
     .await;
 
     child.join().await.map_err(|_| join_canceled())?
+}
+
+#[cfg(feature = "periodic_trace_vm")]
+const PERIODIC_TRACE_JOBS: u64 = 10;
+
+#[cfg(feature = "periodic_trace_vm")]
+pub fn spawn_periodic_trace() -> Result<u32, Cow<'static, str>> {
+    let spec = PeriodicTaskSpec::new(Duration::from_millis(100), Duration::from_millis(100))
+        .map_err(|_| Cow::Borrowed("invalid periodic trace task spec"))?;
+
+    spawn_periodic_task_controlled(
+        "[Awkernel] periodic trace worker".into(),
+        spec,
+        |context| async move {
+            if context.loop_index + 1 >= PERIODIC_TRACE_JOBS {
+                Ok(PeriodicJobDisposition::Complete)
+            } else {
+                Ok(PeriodicJobDisposition::Continue)
+            }
+        },
+    )
+    .map_err(|_| Cow::Borrowed("failed to spawn periodic trace worker"))
 }
 
 #[cfg(feature = "generic_trace_vm")]

@@ -9,7 +9,8 @@ use alloc::borrow::Cow;
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
     feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
+    feature = "generic_trace_vm",
+    feature = "periodic_trace_vm"
 ))]
 use awkernel_async_lib::{scheduler::SchedulerType, task};
 
@@ -19,7 +20,8 @@ use awkernel_async_lib::{scheduler::SchedulerType, task};
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
     feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
+    feature = "generic_trace_vm",
+    feature = "periodic_trace_vm"
 ))]
 const _: () = {
     #[cfg(any(
@@ -28,16 +30,22 @@ const _: () = {
         all(feature = "baseline_trace_vm", feature = "multi_async_trace_vm"),
         all(feature = "baseline_trace_vm", feature = "sleep_wakeup_trace_vm"),
         all(feature = "baseline_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "baseline_trace_vm", feature = "periodic_trace_vm"),
         all(feature = "single_async_trace_vm", feature = "nested_spawn_trace_vm"),
         all(feature = "single_async_trace_vm", feature = "multi_async_trace_vm"),
         all(feature = "single_async_trace_vm", feature = "sleep_wakeup_trace_vm"),
         all(feature = "single_async_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "single_async_trace_vm", feature = "periodic_trace_vm"),
         all(feature = "nested_spawn_trace_vm", feature = "multi_async_trace_vm"),
         all(feature = "nested_spawn_trace_vm", feature = "sleep_wakeup_trace_vm"),
         all(feature = "nested_spawn_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "nested_spawn_trace_vm", feature = "periodic_trace_vm"),
         all(feature = "multi_async_trace_vm", feature = "sleep_wakeup_trace_vm"),
         all(feature = "multi_async_trace_vm", feature = "generic_trace_vm"),
-        all(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm")
+        all(feature = "multi_async_trace_vm", feature = "periodic_trace_vm"),
+        all(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm"),
+        all(feature = "sleep_wakeup_trace_vm", feature = "periodic_trace_vm"),
+        all(feature = "generic_trace_vm", feature = "periodic_trace_vm")
     ))]
     compile_error!("enable exactly one trace VM feature in userland");
 };
@@ -49,7 +57,8 @@ pub async fn main() -> Result<(), Cow<'static, str>> {
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
         feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
+        feature = "generic_trace_vm",
+        feature = "periodic_trace_vm"
     ))]
     {
         return Ok(());
@@ -61,7 +70,8 @@ pub async fn main() -> Result<(), Cow<'static, str>> {
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
         feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
+        feature = "generic_trace_vm",
+        feature = "periodic_trace_vm"
     )))]
     {
         awkernel_services::run().await;
@@ -122,7 +132,8 @@ pub fn try_install_trace_vm() -> bool {
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
         feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
+        feature = "generic_trace_vm",
+        feature = "periodic_trace_vm"
     ))]
     {
         install_trace_vm();
@@ -135,7 +146,8 @@ pub fn try_install_trace_vm() -> bool {
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
         feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
+        feature = "generic_trace_vm",
+        feature = "periodic_trace_vm"
     )))]
     {
         false
@@ -148,7 +160,8 @@ pub fn try_install_trace_vm() -> bool {
     feature = "nested_spawn_trace_vm",
     feature = "multi_async_trace_vm",
     feature = "sleep_wakeup_trace_vm",
-    feature = "generic_trace_vm"
+    feature = "generic_trace_vm",
+    feature = "periodic_trace_vm"
 ))]
 pub fn install_trace_vm() {
     awkernel_async_lib::baseline_trace::reset();
@@ -157,7 +170,8 @@ pub fn install_trace_vm() {
         feature = "nested_spawn_trace_vm",
         feature = "multi_async_trace_vm",
         feature = "sleep_wakeup_trace_vm",
-        feature = "generic_trace_vm"
+        feature = "generic_trace_vm",
+        feature = "periodic_trace_vm"
     ))]
     awkernel_async_lib::baseline_trace::enable_workload_trace_artifacts();
 
@@ -202,6 +216,16 @@ pub fn install_trace_vm() {
         async { trace_minimal::run_generic_random().await },
         SchedulerType::PrioritizedFIFO(31),
     );
+
+    #[cfg(feature = "periodic_trace_vm")]
+    let task_id = match trace_minimal::spawn_periodic_trace() {
+        Ok(task_id) => task_id,
+        Err(err) => task::spawn(
+            "[Awkernel] periodic trace setup failure".into(),
+            async move { Err(err) },
+            SchedulerType::PrioritizedFIFO(31),
+        ),
+    };
 
     awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
 }

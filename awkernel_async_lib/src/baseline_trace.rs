@@ -692,6 +692,9 @@ pub fn arm_dump_on_complete(task_id: u32) {
     DUMP_ON_COMPLETE_TASK_ID.store(task_id, Ordering::Release);
 }
 
+#[cfg(feature = "std")]
+pub fn arm_dump_on_complete(_task_id: u32) {}
+
 #[cfg(not(feature = "std"))]
 pub fn take_dump_on_complete(task_id: u32) -> bool {
     DUMP_ON_COMPLETE_TASK_ID

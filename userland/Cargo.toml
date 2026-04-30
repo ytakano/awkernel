@@ -110,6 +110,11 @@ generic_trace_vm = [
     "dep:trace_minimal",
     "trace_minimal/generic_trace_vm",
 ]
+periodic_trace_vm = [
+    "awkernel_async_lib/baseline_trace",
+    "dep:trace_minimal",
+    "trace_minimal/periodic_trace_vm",
+]
 
 # Evaluation applications
 rd_gen_to_dags = ["dep:rd_gen_to_dags"]
