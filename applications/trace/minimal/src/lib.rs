@@ -19,7 +19,11 @@ use alloc::{boxed::Box, vec::Vec};
     feature = "generic_trace_vm"
 ))]
 use awkernel_async_lib::r#yield;
-#[cfg(any(feature = "sleep_wakeup_trace_vm", feature = "generic_trace_vm"))]
+#[cfg(any(
+    feature = "sleep_wakeup_trace_vm",
+    feature = "generic_trace_vm",
+    feature = "periodic_trace_vm"
+))]
 use awkernel_async_lib::sleep;
 #[cfg(any(
     feature = "single_async_trace_vm",
@@ -155,6 +159,8 @@ pub async fn run_sleep_wakeup() -> TaskResult {
 const PERIODIC_TRACE_JOBS: u64 = 10;
 #[cfg(feature = "periodic_trace_vm")]
 const PERIODIC_TRACE_BUSY_WORKLOAD_US: u64 = 50_000;
+#[cfg(feature = "periodic_trace_vm")]
+const PERIODIC_TRACE_WARM_UP: Duration = Duration::from_secs(1);
 
 #[cfg(feature = "periodic_trace_vm")]
 fn run_periodic_trace_busy_workload() {
@@ -183,6 +189,14 @@ pub fn spawn_periodic_trace() -> Result<u32, Cow<'static, str>> {
         },
     )
     .map_err(|_| Cow::Borrowed("failed to spawn periodic trace worker"))
+}
+
+#[cfg(feature = "periodic_trace_vm")]
+pub async fn run_periodic_trace_warm_up_then_spawn() -> Result<(), Cow<'static, str>> {
+    sleep(PERIODIC_TRACE_WARM_UP).await;
+    let periodic_task_id = spawn_periodic_trace()?;
+    awkernel_async_lib::baseline_trace::arm_dump_on_complete(periodic_task_id);
+    Ok(())
 }
 
 #[cfg(feature = "generic_trace_vm")]

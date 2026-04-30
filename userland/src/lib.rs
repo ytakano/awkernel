@@ -218,14 +218,11 @@ pub fn install_trace_vm() {
     );
 
     #[cfg(feature = "periodic_trace_vm")]
-    let task_id = match trace_minimal::spawn_periodic_trace() {
-        Ok(task_id) => task_id,
-        Err(err) => task::spawn(
-            "[Awkernel] periodic trace setup failure".into(),
-            async move { Err(err) },
-            SchedulerType::PrioritizedFIFO(31),
-        ),
-    };
+    let task_id = task::spawn(
+        "[Awkernel] periodic trace warm-up".into(),
+        async { trace_minimal::run_periodic_trace_warm_up_then_spawn().await },
+        SchedulerType::PrioritizedFIFO(31),
+    );
 
     awkernel_async_lib::baseline_trace::arm_dump_on_complete(task_id);
 }
