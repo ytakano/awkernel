@@ -5,7 +5,10 @@ use alloc::{
 };
 use array_macro::array;
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
-use awkernel_lib::{cpu::NUM_MAX_CPU, delay::cpu_counter};
+use awkernel_lib::{
+    cpu::NUM_MAX_CPU,
+    delay::{cpu_counter, uptime},
+};
 use core::sync::atomic::{AtomicBool, AtomicU64};
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -53,6 +56,7 @@ pub struct BaselineTraceSnapshot {
 struct BaselineTraceRecord {
     event_id: u64,
     tsc: u64,
+    timestamp_us: u64,
     event: BaselineTraceEvent,
     snapshot: BaselineTraceSnapshot,
 }
@@ -286,9 +290,11 @@ fn capture_record(
 ) -> BaselineTraceRecord {
     let event_id = next_event_id();
     let tsc = cpu_counter();
+    let timestamp_us = uptime();
     BaselineTraceRecord {
         event_id,
         tsc,
+        timestamp_us,
         event,
         snapshot,
     }
@@ -301,12 +307,20 @@ fn capture_record_with_event_id(
     snapshot: BaselineTraceSnapshot,
 ) -> BaselineTraceRecord {
     let tsc = cpu_counter();
+    let timestamp_us = uptime();
     BaselineTraceRecord {
         event_id,
         tsc,
+        timestamp_us,
         event,
         snapshot,
     }
+}
+
+#[inline(always)]
+fn refresh_record_timestamp(record: &mut BaselineTraceRecord) {
+    record.tsc = cpu_counter();
+    record.timestamp_us = uptime();
 }
 
 #[inline(always)]
@@ -379,7 +393,8 @@ pub(crate) fn capture_sched_and_task_dispatch(
 }
 
 #[inline(always)]
-pub(crate) fn emit_sched_and_task_dispatch(record: SchedAndTaskDispatchTraceRecord) {
+pub(crate) fn emit_sched_and_task_dispatch(mut record: SchedAndTaskDispatchTraceRecord) {
+    refresh_record_timestamp(&mut record.sched_dispatch);
     emit_record(record.sched_choose);
     emit_record(record.sched_dispatch);
     emit_task_record(record.task_choose);
@@ -517,7 +532,7 @@ fn render_trace_rows_runnable(values: &[u32]) -> String {
 fn render_trace_rows_record(record: BaselineTraceRecord) -> String {
     let (event_tag, arg0, arg1) = render_trace_rows_event(record.event);
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         record.event_id,
         record.snapshot.cpu_id,
         event_tag,
@@ -533,7 +548,8 @@ fn render_trace_rows_record(record: BaselineTraceRecord) -> String {
         render_trace_rows_option(record.snapshot.dispatch_target),
         render_trace_rows_option_list(&record.snapshot.worker_current),
         render_trace_rows_bool_list(&record.snapshot.worker_need_resched),
-        render_trace_rows_option_list(&record.snapshot.worker_dispatch_target)
+        render_trace_rows_option_list(&record.snapshot.worker_dispatch_target),
+        record.timestamp_us
     )
 }
 
@@ -863,8 +879,10 @@ mod tests {
 
         let lines = render_trace_rows_artifact_lines();
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "0\t1\tChoose\t1\t1\t-\t1\ttrue\t1\t-\ttrue\t1");
-        assert_eq!(lines[1], "1\t1\tDispatch\t1\t1\t1\t\tfalse\t-\t1\tfalse\t-");
+        assert_eq!(lines[0].split('\t').count(), 13);
+        assert_eq!(lines[1].split('\t').count(), 13);
+        assert!(lines[0].starts_with("0\t1\tChoose\t1\t1\t-\t1\ttrue\t1\t-\ttrue\t1\t"));
+        assert!(lines[1].starts_with("1\t1\tDispatch\t1\t1\t1\t\tfalse\t-\t1\tfalse\t-\t"));
     }
 
     #[test]
@@ -920,9 +938,9 @@ mod tests {
 
         let lines = render_trace_rows_artifact_lines();
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "0\t0\tChoose\t1\t7\t-\t7\ttrue\t7\t-\ttrue\t7");
-        assert_eq!(lines[1], "1\t0\tDispatch\t1\t7\t7\t\tfalse\t-\t7\tfalse\t-");
-        assert_eq!(lines[2], "2\t1\tComplete\t42\t-\t-\t\ttrue\t-\t-\ttrue\t-");
+        assert!(lines[0].starts_with("0\t0\tChoose\t1\t7\t-\t7\ttrue\t7\t-\ttrue\t7\t"));
+        assert!(lines[1].starts_with("1\t0\tDispatch\t1\t7\t7\t\tfalse\t-\t7\tfalse\t-\t"));
+        assert!(lines[2].starts_with("2\t1\tComplete\t42\t-\t-\t\ttrue\t-\t-\ttrue\t-\t"));
     }
 
     #[test]
@@ -1142,6 +1160,7 @@ mod tests {
             BaselineTraceRecord {
                 event_id: 2,
                 tsc: 12,
+                timestamp_us: 102,
                 event: BaselineTraceEvent::Dispatch { task_id: 2 },
                 snapshot: BaselineTraceSnapshot {
                     cpu_id: 1,
@@ -1157,6 +1176,7 @@ mod tests {
             BaselineTraceRecord {
                 event_id: 0,
                 tsc: 10,
+                timestamp_us: 100,
                 event: BaselineTraceEvent::Wakeup { task_id: 1 },
                 snapshot: BaselineTraceSnapshot {
                     cpu_id: 0,
@@ -1172,6 +1192,7 @@ mod tests {
             BaselineTraceRecord {
                 event_id: 1,
                 tsc: 10,
+                timestamp_us: 101,
                 event: BaselineTraceEvent::HandleResched { cpu_id: 1 },
                 snapshot: BaselineTraceSnapshot {
                     cpu_id: 1,

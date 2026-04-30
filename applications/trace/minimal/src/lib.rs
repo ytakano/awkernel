@@ -176,9 +176,9 @@ const PERIODIC_TRACE_TASKS: [PeriodicTraceTaskConfig; 3] = [
         jobs: 50,
     },
     PeriodicTraceTaskConfig {
-        name: "[Awkernel] periodic trace worker T500 C100 D500",
+        name: "[Awkernel] periodic trace worker T500 C180 D500",
         period: Duration::from_millis(500),
-        cost_us: 100_000,
+        cost_us: 180_000,
         relative_deadline: Duration::from_millis(500),
         jobs: 10,
     },
