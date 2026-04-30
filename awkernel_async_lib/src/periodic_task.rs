@@ -1,3 +1,21 @@
+//! Helpers for spawning logical periodic jobs on top of one Awkernel async task.
+//!
+//! A periodic task created by this module reuses a single runtime task. Each
+//! iteration of the user-provided job body is treated as a logical periodic job
+//! and is identified by a monotonically increasing `loop_index`.
+//!
+//! The runtime task is scheduled by `SchedulerType::GEDF(relative_deadline)`.
+//! This module supplies the logical release time and absolute deadline for each
+//! iteration so the GEDF scheduler and the baseline trace adapter can observe a
+//! periodic job sequence without allocating a new runtime task for every job.
+//!
+//! When the `baseline_trace` feature is enabled, each periodic release can be
+//! emitted as a loop-indexed `RunnableDeadline` row, and each completed
+//! iteration is emitted as `PeriodicJobComplete(task, loop_index)`. These rows
+//! are adapter-local trace evidence; the common scheduling model still treats
+//! time as discrete values and does not depend on Awkernel's concrete timer
+//! source.
+
 use crate::{
     scheduler::SchedulerType,
     task::{self, GedfDeadlineHint, TaskResult},
@@ -5,29 +23,67 @@ use crate::{
 use alloc::borrow::Cow;
 use core::{future::Future, time::Duration};
 
+/// Period and relative deadline parameters for a periodic GEDF task.
+///
+/// Both durations must be positive and convertible to microseconds. The period
+/// determines the logical release spacing between consecutive iterations. The
+/// relative deadline is stored in the runtime scheduler as
+/// `SchedulerType::GEDF(relative_deadline_us)` and is also used to compute each
+/// logical absolute deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodicTaskSpec {
+    /// Logical spacing between consecutive releases.
     pub period: Duration,
+
+    /// Deadline relative to each logical release time.
     pub relative_deadline: Duration,
 }
 
+/// Context passed to one invocation of a periodic task body.
+///
+/// The same Awkernel runtime task calls the user job repeatedly. `loop_index`
+/// distinguishes those logical jobs. `logical_release_time_us` and
+/// `absolute_deadline_us` are expressed in the same discrete microsecond-scale
+/// units used by `awkernel_lib::delay::uptime()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodicJobContext {
+    /// Zero-based logical job index.
     pub loop_index: u64,
+
+    /// Logical release time for this iteration.
     pub logical_release_time_us: u64,
+
+    /// Logical absolute deadline for this iteration.
     pub absolute_deadline_us: u64,
+
+    /// Period configured for the task.
     pub period: Duration,
+
+    /// Relative deadline configured for the task.
     pub relative_deadline: Duration,
 }
 
+/// Errors returned while creating or advancing a periodic task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeriodicTaskError {
+    /// The configured period was zero.
     ZeroPeriod,
+
+    /// The configured relative deadline was zero.
     ZeroRelativeDeadline,
+
+    /// A duration, release time, deadline, or loop index did not fit in `u64`.
     DurationOverflow,
 }
 
 impl PeriodicTaskSpec {
+    /// Builds a validated periodic task specification.
+    ///
+    /// `period` and `relative_deadline` must be non-zero and representable in
+    /// whole microseconds as `u64`. This constructor does not require
+    /// `relative_deadline <= period`; deadlines larger than the period are
+    /// accepted when the caller wants to model overlapping logical jobs at the
+    /// trace level.
     pub fn new(period: Duration, relative_deadline: Duration) -> Result<Self, PeriodicTaskError> {
         if period.is_zero() {
             return Err(PeriodicTaskError::ZeroPeriod);
@@ -76,6 +132,49 @@ fn wait_duration_until(logical_release_time_us: u64) -> Duration {
     Duration::from_micros(logical_release_time_us.saturating_sub(now))
 }
 
+/// Spawns a periodic GEDF task and returns its Awkernel runtime task id.
+///
+/// The first logical release is the current `uptime()` observed during spawn.
+/// After each job body completes, the helper advances the logical release time
+/// by `spec.period`, installs the next GEDF deadline hint, and sleeps until that
+/// next release using an untraced sleep. If the job body returns `Err`, the
+/// periodic task returns that error and stops.
+///
+/// The closure receives a [`PeriodicJobContext`] for each logical job. Use
+/// `context.loop_index` to distinguish jobs that reuse the same runtime task.
+///
+/// # Example
+///
+/// ```
+/// use std::{borrow::Cow, time::Duration};
+///
+/// use awkernel_async_lib::{
+///     spawn_periodic_task, PeriodicJobContext, PeriodicTaskSpec,
+/// };
+///
+/// let _ = async {
+///     let spec = PeriodicTaskSpec::new(
+///         Duration::from_millis(10),
+///         Duration::from_millis(5),
+///     )
+///     .expect("periodic task parameters must be valid");
+///
+///     let task_id = spawn_periodic_task(
+///         Cow::Borrowed("sensor-sampler"),
+///         spec,
+///         |context: PeriodicJobContext| async move {
+///             let _loop_index = context.loop_index;
+///             let _deadline_us = context.absolute_deadline_us;
+///
+///             // Do one logical job of periodic work here.
+///             Ok::<(), Cow<'static, str>>(())
+///         },
+///     )
+///     .expect("periodic task should spawn");
+///
+///     let _: u32 = task_id;
+/// };
+/// ```
 pub fn spawn_periodic_task<F, Fut>(
     name: Cow<'static, str>,
     spec: PeriodicTaskSpec,
