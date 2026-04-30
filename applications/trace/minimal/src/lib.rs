@@ -12,6 +12,8 @@ extern crate alloc;
 use alloc::borrow::Cow;
 #[cfg(feature = "generic_trace_vm")]
 use alloc::{boxed::Box, vec::Vec};
+#[cfg(feature = "periodic_trace_vm")]
+use awkernel_async_lib::channel::oneshot;
 #[cfg(any(
     feature = "single_async_trace_vm",
     feature = "nested_spawn_trace_vm",
@@ -156,46 +158,102 @@ pub async fn run_sleep_wakeup() -> TaskResult {
 }
 
 #[cfg(feature = "periodic_trace_vm")]
-const PERIODIC_TRACE_JOBS: u64 = 10;
-#[cfg(feature = "periodic_trace_vm")]
-const PERIODIC_TRACE_BUSY_WORKLOAD_US: u64 = 50_000;
-#[cfg(feature = "periodic_trace_vm")]
 const PERIODIC_TRACE_WARM_UP: Duration = Duration::from_secs(1);
+#[cfg(feature = "periodic_trace_vm")]
+const PERIODIC_TRACE_TASKS: [PeriodicTraceTaskConfig; 3] = [
+    PeriodicTraceTaskConfig {
+        name: "[Awkernel] periodic trace worker T100 C50 D100",
+        period: Duration::from_millis(100),
+        cost_us: 50_000,
+        relative_deadline: Duration::from_millis(100),
+        jobs: 50,
+    },
+    PeriodicTraceTaskConfig {
+        name: "[Awkernel] periodic trace worker T100 C10 D100",
+        period: Duration::from_millis(100),
+        cost_us: 10_000,
+        relative_deadline: Duration::from_millis(100),
+        jobs: 50,
+    },
+    PeriodicTraceTaskConfig {
+        name: "[Awkernel] periodic trace worker T500 C100 D500",
+        period: Duration::from_millis(500),
+        cost_us: 100_000,
+        relative_deadline: Duration::from_millis(500),
+        jobs: 10,
+    },
+];
 
 #[cfg(feature = "periodic_trace_vm")]
-fn run_periodic_trace_busy_workload() {
+#[derive(Clone, Copy)]
+struct PeriodicTraceTaskConfig {
+    name: &'static str,
+    period: Duration,
+    cost_us: u64,
+    relative_deadline: Duration,
+    jobs: u64,
+}
+
+#[cfg(feature = "periodic_trace_vm")]
+fn run_periodic_trace_busy_workload(cost_us: u64) {
     let start = uptime();
-    while uptime().saturating_sub(start) < PERIODIC_TRACE_BUSY_WORKLOAD_US {
+    while uptime().saturating_sub(start) < cost_us {
         core::hint::spin_loop();
     }
 }
 
 #[cfg(feature = "periodic_trace_vm")]
-pub fn spawn_periodic_trace() -> Result<u32, Cow<'static, str>> {
-    let spec = PeriodicTaskSpec::new(Duration::from_millis(100), Duration::from_millis(100))
+fn spawn_periodic_trace_task(
+    config: PeriodicTraceTaskConfig,
+    mut done: Option<oneshot::Sender<()>>,
+) -> Result<u32, Cow<'static, str>> {
+    let spec = PeriodicTaskSpec::new(config.period, config.relative_deadline)
         .map_err(|_| Cow::Borrowed("invalid periodic trace task spec"))?;
 
-    spawn_periodic_task_controlled(
-        "[Awkernel] periodic trace worker".into(),
-        spec,
-        |context| async move {
-            run_periodic_trace_busy_workload();
+    spawn_periodic_task_controlled(Cow::Borrowed(config.name), spec, move |context| {
+        let complete_after_this_job = context.loop_index + 1 >= config.jobs;
+        let done = if complete_after_this_job {
+            done.take()
+        } else {
+            None
+        };
 
-            if context.loop_index + 1 >= PERIODIC_TRACE_JOBS {
+        async move {
+            run_periodic_trace_busy_workload(config.cost_us);
+
+            if complete_after_this_job {
+                if let Some(done) = done {
+                    done.send(())
+                        .map_err(|_| Cow::Borrowed("periodic trace completion channel closed"))?;
+                }
                 Ok(PeriodicJobDisposition::Complete)
             } else {
                 Ok(PeriodicJobDisposition::Continue)
             }
-        },
-    )
+        }
+    })
     .map_err(|_| Cow::Borrowed("failed to spawn periodic trace worker"))
 }
 
 #[cfg(feature = "periodic_trace_vm")]
 pub async fn run_periodic_trace_warm_up_then_spawn() -> Result<(), Cow<'static, str>> {
     sleep(PERIODIC_TRACE_WARM_UP).await;
-    let periodic_task_id = spawn_periodic_trace()?;
-    awkernel_async_lib::baseline_trace::arm_dump_on_complete(periodic_task_id);
+
+    let mut completions = [None, None, None];
+
+    for (completion, config) in completions.iter_mut().zip(PERIODIC_TRACE_TASKS) {
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        spawn_periodic_trace_task(config, Some(done_tx))?;
+        *completion = Some(done_rx);
+    }
+
+    for completion in completions {
+        completion
+            .ok_or(Cow::Borrowed("missing periodic trace completion receiver"))?
+            .await
+            .map_err(|_| Cow::Borrowed("periodic trace completion channel closed"))?;
+    }
+
     Ok(())
 }
 

@@ -158,8 +158,8 @@ pub(crate) struct SchedAndTaskDispatchTraceRecord {
     task_dispatch: Option<TaskTraceRecord>,
 }
 
-const TRACE_CAPACITY: usize = 4096;
-const LIFECYCLE_TRACE_CAPACITY: usize = 512;
+const TRACE_CAPACITY: usize = 16384;
+const LIFECYCLE_TRACE_CAPACITY: usize = 2048;
 
 struct TraceBuffer {
     records: Vec<BaselineTraceRecord>,
