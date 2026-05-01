@@ -7,7 +7,7 @@ use core::time::Duration;
 use crate::task::Task;
 use crate::task::{get_current_task, get_scheduler_type_by_task_id};
 use alloc::collections::{binary_heap::BinaryHeap, btree_map::BTreeMap};
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use awkernel_async_lib_verified::delta_list::DeltaList;
 use awkernel_lib::{
     cpu::num_cpu,
@@ -132,8 +132,29 @@ pub(crate) trait Scheduler {
     /// Get the scheduler name.
     fn scheduler_name(&self) -> SchedulerType;
 
+    /// Append tasks that are visible in this scheduler's concrete run queue.
+    #[cfg(feature = "baseline_trace")]
+    fn append_runnable_tasks(&self, out: &mut Vec<Arc<Task>>);
+
     #[allow(dead_code)] // TODO: to be removed
     fn priority(&self) -> u8;
+}
+
+#[cfg(feature = "baseline_trace")]
+pub(crate) fn collect_runnable_tasks() -> Vec<Arc<Task>> {
+    let mut tasks = Vec::new();
+
+    for &scheduler_type in PRIORITY_LIST.iter() {
+        get_scheduler(scheduler_type).append_runnable_tasks(&mut tasks);
+    }
+
+    let mut node = MCSNode::new();
+    let pending_tasks = PREEMPTION_PENDING_TASKS.lock(&mut node);
+    for heap in pending_tasks.values() {
+        tasks.extend(heap.iter().cloned());
+    }
+
+    tasks
 }
 
 pub(crate) struct ScheduledTask {

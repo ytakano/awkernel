@@ -55,17 +55,22 @@ impl Scheduler for PrioritizedRRScheduler {
         let mut node = MCSNode::new();
         let _guard = GLOBAL_WAKE_GET_MUTEX.lock(&mut node);
         if !self.invoke_preemption_wake(task.clone()) {
-            let mut node_inner = MCSNode::new();
-            let mut data = self.data.lock(&mut node_inner);
-            let internal_data = data.get_or_insert_with(PrioritizedRRData::new);
-            internal_data.queue.push(
-                priority,
-                PrioritizedRRTask {
-                    task: task.clone(),
-                    _priority: priority,
-                },
-            );
+            {
+                let mut node_inner = MCSNode::new();
+                let mut data = self.data.lock(&mut node_inner);
+                let internal_data = data.get_or_insert_with(PrioritizedRRData::new);
+                internal_data.queue.push(
+                    priority,
+                    PrioritizedRRTask {
+                        task: task.clone(),
+                        _priority: priority,
+                    },
+                );
+            }
         }
+
+        #[cfg(feature = "baseline_trace")]
+        crate::task::record_baseline_queue_visible_wakeup(task.clone());
     }
 
     fn get_next(&self, execution_ensured: bool) -> Option<Arc<Task>> {
@@ -108,6 +113,15 @@ impl Scheduler for PrioritizedRRScheduler {
 
     fn priority(&self) -> u8 {
         self.priority
+    }
+
+    #[cfg(feature = "baseline_trace")]
+    fn append_runnable_tasks(&self, out: &mut Vec<Arc<Task>>) {
+        let mut node = MCSNode::new();
+        let data = self.data.lock(&mut node);
+        if let Some(data) = data.as_ref() {
+            out.extend(data.queue.iter().map(|(_, task)| task.task.clone()));
+        }
     }
 }
 

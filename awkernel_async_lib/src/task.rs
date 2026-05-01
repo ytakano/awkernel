@@ -219,18 +219,14 @@ pub(crate) fn clear_current_gedf_deadline_hint() -> bool {
 
 #[cfg(feature = "baseline_trace")]
 fn baseline_runnable_ids(extra_runnable: Option<u32>) -> Vec<u32> {
-    let mut runnable = Vec::new();
-
-    let mut node = MCSNode::new();
-    let tasks = TASKS.lock(&mut node);
-
-    for task in tasks.id_to_task.values() {
-        let mut node = MCSNode::new();
-        let info = task.info.lock(&mut node);
-        if info.state == State::Runnable {
-            runnable.push(info.trace_task_id);
-        }
-    }
+    let mut runnable = scheduler::collect_runnable_tasks()
+        .into_iter()
+        .filter_map(|task| {
+            let mut node = MCSNode::new();
+            let info = task.info.lock(&mut node);
+            matches!(info.state, State::Runnable | State::Preempted).then_some(info.trace_task_id)
+        })
+        .collect::<Vec<_>>();
 
     if let Some(task_id) = extra_runnable {
         if !runnable.iter().any(|&id| id == task_id) {
@@ -239,6 +235,7 @@ fn baseline_runnable_ids(extra_runnable: Option<u32>) -> Vec<u32> {
     }
 
     runnable.sort_unstable();
+    runnable.dedup();
     runnable
 }
 
@@ -336,9 +333,8 @@ fn baseline_choose_snapshot(
 }
 
 #[cfg(feature = "baseline_trace")]
-fn record_baseline_runnable_projection(task_id: u32) {
-    // Adapter-local projection: this records that TaskInfo became Runnable.
-    // It is not a concrete scheduler-queue insertion observation.
+pub(crate) fn record_baseline_queue_visible_wakeup(task: Arc<Task>) {
+    let task_id = trace_task_id_of_task(&task);
     baseline_trace::record(
         BaselineTraceEvent::Wakeup { task_id },
         baseline_snapshot(0, baseline_current_task_id(0), Some(task_id), false, None),
@@ -480,10 +476,8 @@ impl ArcWake for Task {
 
         #[cfg(feature = "baseline_trace")]
         {
-            // This lifecycle trace is emitted after the TaskInfo state becomes
-            // Runnable and before scheduler::wake_task performs queue/preempt
-            // handling. It projects release into the abstract runnable view.
-            record_baseline_runnable_projection(trace_task_id);
+            // Lifecycle evidence only. The scheduler-facing Wakeup trace is
+            // emitted after the task becomes visible to the scheduler.
             record_workload_task_trace(TaskTraceEvent::Runnable {
                 task_id: trace_task_id,
             });
@@ -571,12 +565,14 @@ impl TaskInfo {
     }
 
     #[inline(always)]
-    pub(crate) fn promote_or_current_gedf_deadline_hint(&mut self) -> Option<GedfDeadlineHint> {
+    pub(crate) fn promote_or_current_gedf_deadline_hint(
+        &mut self,
+    ) -> (Option<GedfDeadlineHint>, Option<GedfDeadlineHint>) {
         if let Some(hint) = self.next_gedf_deadline_hint.take() {
             self.current_gedf_deadline_hint = Some(hint);
-            Some(hint)
+            (Some(hint), Some(hint))
         } else {
-            self.current_gedf_deadline_hint
+            (self.current_gedf_deadline_hint, None)
         }
     }
 

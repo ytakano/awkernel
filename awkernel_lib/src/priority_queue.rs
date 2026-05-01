@@ -42,6 +42,20 @@ impl<T> PriorityQueue<T> {
 
         next
     }
+
+    /// Iterate over queued values without removing them.
+    ///
+    /// Items are yielded in the same priority/FIFO order used by [`Self::pop`].
+    /// The yielded priority is the effective queue priority after clamping to
+    /// [`HIGHEST_PRIORITY`].
+    #[inline(always)]
+    pub fn iter(&self) -> impl Iterator<Item = (u8, &T)> + '_ {
+        (0..=HIGHEST_PRIORITY).rev().flat_map(move |priority| {
+            self.queue[priority as usize]
+                .iter()
+                .map(move |val| (priority, val))
+        })
+    }
 }
 
 impl<T> Default for PriorityQueue<T> {
@@ -93,6 +107,36 @@ mod tests {
         }
 
         // Queue should be empty
+        assert_eq!(q.pop(), None);
+    }
+
+    #[test]
+    fn test_priority_queue_iter() {
+        let mut q = PriorityQueue::new();
+
+        assert_eq!(q.iter().next(), None);
+
+        q.push(0, 0);
+        q.push(2, 20);
+        q.push(2, 21);
+        q.push(HIGHEST_PRIORITY + 1, 31);
+        q.push(1, 10);
+
+        let snapshot = q
+            .iter()
+            .map(|(priority, val)| (priority, *val))
+            .collect::<alloc::vec::Vec<_>>();
+
+        assert_eq!(
+            snapshot,
+            alloc::vec![(HIGHEST_PRIORITY, 31), (2, 20), (2, 21), (1, 10), (0, 0)]
+        );
+
+        assert_eq!(q.pop(), Some(31));
+        assert_eq!(q.pop(), Some(20));
+        assert_eq!(q.pop(), Some(21));
+        assert_eq!(q.pop(), Some(10));
+        assert_eq!(q.pop(), Some(0));
         assert_eq!(q.pop(), None);
     }
 }

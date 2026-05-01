@@ -72,10 +72,10 @@ impl Scheduler for GEDFScheduler {
             match info.scheduler_type {
                 SchedulerType::GEDF(relative_deadline) => {
                     let wake_time = awkernel_lib::time::Time::now().uptime().as_micros() as u64;
-                    let hint = if dag_info.is_none() {
+                    let (hint, emitted_hint) = if dag_info.is_none() {
                         info.promote_or_current_gedf_deadline_hint()
                     } else {
-                        None
+                        (None, None)
                     };
                     let absolute_deadline = if let Some(hint) = hint {
                         hint.absolute_deadline
@@ -95,11 +95,13 @@ impl Scheduler for GEDFScheduler {
                     info.update_absolute_deadline(absolute_deadline);
 
                     #[cfg(feature = "baseline_trace")]
-                    let emit_runnable_deadline = dag_info.is_none().then_some((
+                    let emit_runnable_deadline = (dag_info.is_none()
+                        && (hint.is_none() || emitted_hint.is_some()))
+                    .then_some((
                         info.get_trace_task_id(),
                         relative_deadline,
                         trace_wake_time,
-                        hint.and_then(|hint| hint.periodic_loop_index),
+                        emitted_hint.and_then(|hint| hint.periodic_loop_index),
                     ));
 
                     #[cfg(not(feature = "baseline_trace"))]
@@ -111,30 +113,35 @@ impl Scheduler for GEDFScheduler {
             }
         };
 
-        #[cfg(feature = "baseline_trace")]
-        if let Some((task_id, relative_deadline, wake_time, periodic_loop_index)) =
-            _emit_runnable_deadline
-        {
-            baseline_trace::record_task_trace(TaskTraceEvent::RunnableDeadline {
-                task_id,
-                relative_deadline,
-                wake_time,
-                absolute_deadline,
-                periodic_loop_index,
-            });
-        }
-
         let mut node = MCSNode::new();
         let _guard = GLOBAL_WAKE_GET_MUTEX.lock(&mut node);
         if !self.invoke_preemption(task.clone()) {
-            let mut node_inner = MCSNode::new();
-            let mut data = self.data.lock(&mut node_inner);
-            let internal_data = data.get_or_insert_with(GEDFData::new);
-            internal_data.queue.push(GEDFTask {
-                task: task.clone(),
-                absolute_deadline,
-                wake_time,
-            });
+            {
+                let mut node_inner = MCSNode::new();
+                let mut data = self.data.lock(&mut node_inner);
+                let internal_data = data.get_or_insert_with(GEDFData::new);
+                internal_data.queue.push(GEDFTask {
+                    task: task.clone(),
+                    absolute_deadline,
+                    wake_time,
+                });
+            }
+        }
+
+        #[cfg(feature = "baseline_trace")]
+        {
+            if let Some((task_id, relative_deadline, wake_time, periodic_loop_index)) =
+                _emit_runnable_deadline
+            {
+                baseline_trace::record_task_trace(TaskTraceEvent::RunnableDeadline {
+                    task_id,
+                    relative_deadline,
+                    wake_time,
+                    absolute_deadline,
+                    periodic_loop_index,
+                });
+            }
+            crate::task::record_baseline_queue_visible_wakeup(task.clone());
         }
     }
 
@@ -180,6 +187,15 @@ impl Scheduler for GEDFScheduler {
 
     fn priority(&self) -> u8 {
         self.priority
+    }
+
+    #[cfg(feature = "baseline_trace")]
+    fn append_runnable_tasks(&self, out: &mut Vec<Arc<Task>>) {
+        let mut node = MCSNode::new();
+        let data = self.data.lock(&mut node);
+        if let Some(data) = data.as_ref() {
+            out.extend(data.queue.iter().map(|task| task.task.clone()));
+        }
     }
 }
 

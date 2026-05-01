@@ -6,7 +6,7 @@ use crate::{
     scheduler::get_priority,
     task::{set_current_task, State},
 };
-use alloc::{collections::VecDeque, sync::Arc};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use awkernel_lib::sync::mutex::{MCSNode, Mutex};
 
 pub struct PanickedScheduler {
@@ -28,16 +28,21 @@ impl PanickedData {
 
 impl Scheduler for PanickedScheduler {
     fn wake_task(&self, task: Arc<Task>) {
-        let mut node = MCSNode::new();
-        let mut data = self.data.lock(&mut node);
+        {
+            let mut node = MCSNode::new();
+            let mut data = self.data.lock(&mut node);
 
-        if let Some(data) = data.as_mut() {
-            data.queue.push_back(task);
-        } else {
-            let mut panicked_data = PanickedData::new();
-            panicked_data.queue.push_back(task);
-            *data = Some(panicked_data);
+            if let Some(data) = data.as_mut() {
+                data.queue.push_back(task.clone());
+            } else {
+                let mut panicked_data = PanickedData::new();
+                panicked_data.queue.push_back(task.clone());
+                *data = Some(panicked_data);
+            }
         }
+
+        #[cfg(feature = "baseline_trace")]
+        crate::task::record_baseline_queue_visible_wakeup(task.clone());
     }
 
     fn get_next(&self, execution_ensured: bool) -> Option<Arc<Task>> {
@@ -83,6 +88,15 @@ impl Scheduler for PanickedScheduler {
 
     fn priority(&self) -> u8 {
         self.priority
+    }
+
+    #[cfg(feature = "baseline_trace")]
+    fn append_runnable_tasks(&self, out: &mut Vec<Arc<Task>>) {
+        let mut node = MCSNode::new();
+        let data = self.data.lock(&mut node);
+        if let Some(data) = data.as_ref() {
+            out.extend(data.queue.iter().cloned());
+        }
     }
 }
 
