@@ -49,6 +49,10 @@ struct Args {
     /// uefi or bios.
     #[arg(value_enum, long, default_value_t = BootType::default())]
     boot_type: BootType,
+
+    /// File to load as the ramdisk (available to the kernel at boot).
+    #[arg(long)]
+    ramdisk: Option<String>,
 }
 
 fn main() {
@@ -58,10 +62,21 @@ fn main() {
     let output_path = Path::new(&args.output);
     let pxe_path = Path::new(&args.pxe);
 
+    if let Some(ramdisk) = &args.ramdisk {
+        // The bootloader cannot map an empty ramdisk.
+        let len = std::fs::metadata(ramdisk)
+            .unwrap_or_else(|e| panic!("cannot read the ramdisk {ramdisk}: {e}"))
+            .len();
+        assert!(len > 0, "the ramdisk {ramdisk} is empty");
+    }
+
     match args.boot_type {
         #[cfg(feature = "uefi")]
         BootType::Uefi => {
-            let uefi = UefiBoot::new(kernel_path);
+            let mut uefi = UefiBoot::new(kernel_path);
+            if let Some(ramdisk) = &args.ramdisk {
+                uefi.set_ramdisk(Path::new(ramdisk));
+            }
             uefi.create_disk_image(output_path).unwrap();
             uefi.create_pxe_tftp_folder(pxe_path).unwrap();
 
@@ -85,9 +100,11 @@ fn main() {
         }
         #[cfg(feature = "bios")]
         BootType::Bios => {
-            BiosBoot::new(kernel_path)
-                .create_disk_image(output_path)
-                .unwrap();
+            let mut bios = BiosBoot::new(kernel_path);
+            if let Some(ramdisk) = &args.ramdisk {
+                bios.set_ramdisk(Path::new(ramdisk));
+            }
+            bios.create_disk_image(output_path).unwrap();
             println!(
                 "\nRun:\nqemu-system-x86_64 -drive format=raw,file={} -serial stdio -monitor telnet::5556,server,nowait -smp 4 -m 512",
                 output_path.display()

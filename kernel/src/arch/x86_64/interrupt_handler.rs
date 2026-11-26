@@ -528,7 +528,11 @@ extern "x86-interrupt" fn preemption(_stack_frame: InterruptStackFrame) {
     }
 
     awkernel_lib::interrupt::eoi(); // End of interrupt.
-    awkernel_lib::interrupt::handle_preemption();
+
+    // This handler may switch to another task, and this task may resume on
+    // another CPU. Only XMM0-15 are saved by the prologue, so preserve the
+    // upper halves of the YMM registers of the interrupted task.
+    awkernel_lib::arch::x86_64::xsave::with_avx_saved(awkernel_lib::interrupt::handle_preemption);
 
     #[cfg(feature = "perf")]
     awkernel_async_lib::task::perf::transition_to(prev);

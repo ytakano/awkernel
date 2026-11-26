@@ -94,6 +94,10 @@ optional = true
 path = "../applications/tests/test_llft"
 optional = true
 
+[dependencies.test_avx_preempt]
+path = "../applications/tests/test_avx_preempt"
+optional = true
+
 [features]
 default = []
 perf = ["awkernel/perf", "awkernel_services/perf"]
@@ -134,3 +138,4 @@ test_raspi_dvfs = ["dep:test_raspi_dvfs"]
 test_voluntary_preemption = ["dep:test_voluntary_preemption"]
 test_edf = ["dep:test_edf"]
 test_llft = ["dep:test_llft"]
+test_avx_preempt = ["dep:test_avx_preempt"]

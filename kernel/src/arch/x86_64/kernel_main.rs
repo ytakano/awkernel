@@ -8,7 +8,9 @@ use super::{
 };
 use crate::{
     arch::{config::DMA_START, x86_64::stack::map_stack},
-    config::{BACKUP_HEAP_SIZE, DMA_SIZE, HEAP_START, PHYSICAL_MEMORY_OFFSET, STACK_SIZE},
+    config::{
+        BACKUP_HEAP_SIZE, DMA_SIZE, HEAP_START, PHYSICAL_MEMORY_OFFSET, RAMDISK_START, STACK_SIZE,
+    },
     kernel_info::KernelInfo,
 };
 use acpi::{madt::MadtEntry, platform::ProcessorState, AcpiTables};
@@ -63,6 +65,7 @@ extern "C" {
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(Mapping::FixedAddress(PHYSICAL_MEMORY_OFFSET));
+    config.mappings.ramdisk_memory = Mapping::FixedAddress(RAMDISK_START);
     config.kernel_stack_size = STACK_SIZE as u64;
     config
 };
@@ -101,7 +104,7 @@ const MPBOOT_REGION_END: u64 = 1024 * 1024;
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     unsafe { crate::config::init() }; // 0. Initialize the configuration.
 
-    enable_fpu(); // 1. Enable SSE.
+    enable_fpu(true); // 1. Enable SSE (and AVX if available).
 
     super::console::init_device(); // 2. Initialize the serial port.
 
@@ -125,6 +128,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         wait_forever();
     };
     let offset = *offset;
+
+    // The bootloader mapped the ramdisk (if any) and reported its frames as
+    // not usable, so the heap never takes them.
+    if let Some(addr) = boot_info.ramdisk_addr.as_ref() {
+        unsafe { awkernel_lib::ramdisk::set(*addr as usize, boot_info.ramdisk_len as usize) };
+    }
 
     // 5. Initialize ACPI.
     let acpi = if let Some(acpi) = awkernel_lib::arch::x86_64::acpi::create_acpi(boot_info, offset)
@@ -466,7 +475,7 @@ fn init_primary_heap(
     );
 }
 
-fn enable_fpu() {
+fn enable_fpu(primary: bool) {
     let mut cr0flags = Cr0::read();
     cr0flags &= !Cr0Flags::EMULATE_COPROCESSOR;
     cr0flags |= Cr0Flags::MONITOR_COPROCESSOR;
@@ -477,6 +486,10 @@ fn enable_fpu() {
     cr4flags |= Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE;
 
     unsafe { Cr4::write(cr4flags) };
+
+    // AVX is used only by code that checks for it at run time. The preemption
+    // handler preserves the AVX state (see `awkernel_lib::arch::x86_64::xsave`).
+    unsafe { awkernel_lib::arch::x86_64::xsave::enable_avx(primary) };
 }
 
 // const NON_PRIMARY_START: u64 = 0; // Entry point of 16-bit mode (protected mode).
@@ -605,7 +618,7 @@ fn non_primary_kernel_main() -> ! {
     }
     fence(Ordering::Acquire);
 
-    enable_fpu(); // Enable SSE.
+    enable_fpu(false); // Enable SSE (and AVX if available).
 
     unsafe { interrupt_handler::load() };
 

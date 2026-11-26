@@ -30,6 +30,8 @@ pub(super) mod paging;
 #[cfg(not(feature = "std"))]
 pub mod power;
 pub mod power_profile;
+#[cfg(not(feature = "std"))]
+pub mod xsave;
 
 pub struct X86;
 

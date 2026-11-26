@@ -5,6 +5,11 @@ pub const DMA_START: usize = 0x40000000000;
 
 pub const HEAP_START: usize = 0x41000000000;
 
+/// Virtual address where the bootloader maps the ramdisk. Fixed so that it
+/// cannot collide with the DMA and heap regions above, which the bootloader
+/// does not know about (the heap may span all physical memory, < 1 TiB here).
+pub const RAMDISK_START: u64 = 0x500_0000_0000;
+
 /// Virtual address of the bootloader's physical memory mapping: the start of
 /// the higher half, so up to 128 TiB of physical address space fits.
 ///

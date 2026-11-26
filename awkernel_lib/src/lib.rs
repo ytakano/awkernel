@@ -27,6 +27,7 @@ pub mod mmio;
 pub mod net;
 pub mod power;
 pub mod priority_queue;
+pub mod ramdisk;
 pub mod sanity;
 pub mod storage;
 pub mod sync;

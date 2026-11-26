@@ -62,5 +62,8 @@ pub async fn run() -> Result<(), Cow<'static, str>> {
     #[cfg(feature = "test_llft")]
     test_llft::run().await;
 
+    #[cfg(feature = "test_avx_preempt")]
+    test_avx_preempt::run().await; // test for preserving AVX state on preemption
+
     Ok(())
 }

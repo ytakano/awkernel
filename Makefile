@@ -121,11 +121,15 @@ kernel-x86_64.elf: FORCE
 	RUSTFLAGS="$(RUSTC_MISC_ARGS)" cargo +$(RUSTV) x86 $(OPT)
 	python3 scripts/embed_debug_info.py $@
 
+# Optional file loaded by the bootloader as the ramdisk (e.g. LLM weights):
+#   make x86_64 RELEASE=1 RAMDISK=path/to/file
+RAMDISK_OPT = $(if $(RAMDISK),--ramdisk $(RAMDISK))
+
 x86_64_boot.img: kernel-x86_64.elf
-	RUSTFLAGS="$(RUSTC_MISC_ARGS)" cargo +$(RUSTV) run --release --package x86bootdisk --no-default-features --features bios -- --kernel $< --output $@ --boot-type bios
+	RUSTFLAGS="$(RUSTC_MISC_ARGS)" cargo +$(RUSTV) run --release --package x86bootdisk --no-default-features --features bios -- --kernel $< --output $@ --boot-type bios $(RAMDISK_OPT)
 
 x86_64_uefi.img: kernel-x86_64.elf
-	RUSTFLAGS="$(RUSTC_MISC_ARGS)" cargo +$(RUSTV) run --release --package x86bootdisk --no-default-features --features uefi -- --kernel $< --output $@ --pxe x86_64_uefi_pxe_boot --boot-type uefi
+	RUSTFLAGS="$(RUSTC_MISC_ARGS)" cargo +$(RUSTV) run --release --package x86bootdisk --no-default-features --features uefi -- --kernel $< --output $@ --pxe x86_64_uefi_pxe_boot --boot-type uefi $(RAMDISK_OPT)
 
 OVMF_PATH := $(shell cat ${HOME}/.ovmfpath)
 
@@ -179,6 +183,22 @@ debug-x86_64:
 qemu-x86_64-nographic:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
 	qemu-system-x86_64 $(QEMU_X86_ARGS) -nographic
+
+## KVM with the host CPU (AVX2 etc.), e.g. for the local LLM demo.
+## Uses the OVMF fetched by this checkout's x86bootdisk, not ~/.ovmfpath.
+KVM_OVMF ?= target/ovmf/x64
+KVM_MEM ?= 8G
+KVM_SMP ?= 5
+
+QEMU_X86_KVM_ARGS= -enable-kvm -cpu host -machine q35 -m $(KVM_MEM) -smp $(KVM_SMP)
+QEMU_X86_KVM_ARGS+= -drive if=pflash,format=raw,readonly=on,file=$(KVM_OVMF)/code.fd
+QEMU_X86_KVM_ARGS+= -drive if=pflash,format=raw,file=$(KVM_OVMF)/vars_kvm.fd
+QEMU_X86_KVM_ARGS+= -drive format=raw,file=x86_64_uefi.img
+QEMU_X86_KVM_ARGS+= -nographic -monitor telnet::$(QEMUPORT),server,nowait
+
+qemu-x86_64-kvm:
+	cp $(KVM_OVMF)/vars.fd $(KVM_OVMF)/vars_kvm.fd
+	qemu-system-x86_64 $(QEMU_X86_KVM_ARGS)
 
 gdb-x86_64:
 	cp ${OVMF_PATH}/vars.fd ${OVMF_PATH}/vars_qemu.fd
