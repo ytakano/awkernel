@@ -21,83 +21,131 @@ use awkernel_llm::{
 };
 use std::time::Instant;
 
-/// The `task` tool output, in the compact form the shell gives the LLM
-/// (`task_tool_text`).
-const TASK_A: &str = "Running tasks by CPU:
-cpu 0: idle
-cpu 1: task 11
-cpu 2: task 10
-cpu 3: task 12
-cpu 4: task 13
-Uptime: 5123456 us
-Total preemption: 0
-Tasks (ID, state, preemptions, name):
-2, Waiting, 0, [Awkernel] buffered logger service
-3, Waiting, 0, [Awkernel] network service
-4, Waiting, 0, [Awkernel] display service
-5, Waiting, 0, [Awkernel] TCP garbage collector
-6, Waiting, 0, [Awkernel] Network interface poller
-7, Waiting, 0, [Awkernel] network service:igb-0000:00:02.0: IRQ = 64
-8, Waiting, 0, [Awkernel] network service:igb-0000:00:02.0: tick = 200 [msec]
-9, Waiting, 0, [Awkernel] shell
-10, Running, 0, [local_llm] service
-11, Running, 0, [local_llm] helper 0
-12, Running, 0, [local_llm] helper 1
-13, Running, 0, [local_llm] helper 2";
-
-const TASK_B: &str = "Running tasks by CPU:
-cpu 0: idle
-cpu 1: task 14
-cpu 2: task 10
-cpu 3: task 9
-Uptime: 7654321 us
-Total preemption: 12
-Tasks (ID, state, preemptions, name):
-2, Waiting, 0, [Awkernel] buffered logger service
-3, Waiting, 0, [Awkernel] network service
-4, Waiting, 0, [Awkernel] display service
-5, Waiting, 2, [Awkernel] TCP garbage collector
-6, Waiting, 0, [Awkernel] Network interface poller
-7, Waiting, 0, [Awkernel] network service:igb-0000:00:02.0: IRQ = 65
-8, Waiting, 0, [Awkernel] network service:igb-0000:00:02.0: tick = 200 [msec]
-9, Running, 3, [Awkernel] shell
-10, Running, 0, [local_llm] service
-11, Waiting, 0, [local_llm] helper 0
-12, Waiting, 0, [local_llm] helper 1
-13, Waiting, 0, [local_llm] helper 2
-14, Running, 7, [app] sensor driver
-15, Waiting, 0, [app] logger";
-
-const INTERRUPT_A: &str = "IRQ Name
- 36 name: serial port (awkernel_shell)
- 64 name: igb-0000:00:02.0
-253 name: local timer
-255 name: preemption";
-
-const INTERRUPT_B: &str = "IRQ Name
- 36 name: serial port (awkernel_shell)
- 65 name: igb-0000:00:02.0
- 66 name: virtio-net-0000:00:03.0
-253 name: local timer
-255 name: preemption";
-
-const IFCONFIG_A: &str = "[0] igb-0000:00:02.0:
-    IPv4 address:
-    IPv4 gateway: None
-    MAC address: 52:54:00:12:34:56
-    Link status: Up (Full Duplex), Link speed: 1000 Mbps
-    Capabilities: VLAN_MTU VLAN_HWTAGGING
-    IRQs: [64]
-    Poll mode: false";
-
-const IFCONFIG_B: &str = "[0] igb-0000:00:02.0:
-    IPv4 address: 10.0.2.15/24
-    IPv4 gateway: 10.0.2.2
-    MAC address: 52:54:00:ab:cd:ef
-    Link status: Down, Link speed: 100 Mbps
-    Capabilities: VLAN_MTU VLAN_HWTAGGING
-    IRQs: [65]
-    Poll mode: false";
+/// Tool outputs for system states A and B, made with the same formatting
+/// functions as the kernel (`tools::report`).
+fn tool_output(name: &str, b: bool) -> Option<String> {
+    use awkernel_llm::tools::report::*;
+    let row = |id, name, state, preemptions| TaskRow {
+        id,
+        name,
+        state,
+        preemptions,
+    };
+    Some(match name {
+        "task" if !b => tasks(&TaskReport {
+            uptime_us: 5_123_456,
+            total_preemptions: 0,
+            cpus: &[
+                (0, None),
+                (1, Some(11)),
+                (2, Some(10)),
+                (3, Some(12)),
+                (4, Some(13)),
+            ],
+            tasks: &[
+                row(2, "[Awkernel] buffered logger service", "Waiting", 0),
+                row(3, "[Awkernel] network service", "Waiting", 0),
+                row(4, "[Awkernel] display service", "Waiting", 0),
+                row(5, "[Awkernel] TCP garbage collector", "Waiting", 0),
+                row(6, "[Awkernel] Network interface poller", "Waiting", 0),
+                row(
+                    7,
+                    "[Awkernel] network service:igb-0000:00:02.0: IRQ = 64",
+                    "Waiting",
+                    0,
+                ),
+                row(
+                    8,
+                    "[Awkernel] network service:igb-0000:00:02.0: tick = 200 [msec]",
+                    "Waiting",
+                    0,
+                ),
+                row(9, "[Awkernel] shell", "Waiting", 0),
+                row(10, "[local_llm] service", "Running", 0),
+                row(11, "[local_llm] helper 0", "Running", 0),
+                row(12, "[local_llm] helper 1", "Running", 0),
+                row(13, "[local_llm] helper 2", "Running", 0),
+            ],
+        }),
+        "task" => tasks(&TaskReport {
+            uptime_us: 7_654_321,
+            total_preemptions: 12,
+            cpus: &[(0, None), (1, Some(14)), (2, Some(10)), (3, Some(9))],
+            tasks: &[
+                row(2, "[Awkernel] buffered logger service", "Waiting", 0),
+                row(3, "[Awkernel] network service", "Waiting", 0),
+                row(4, "[Awkernel] display service", "Waiting", 0),
+                row(5, "[Awkernel] TCP garbage collector", "Waiting", 2),
+                row(6, "[Awkernel] Network interface poller", "Waiting", 0),
+                row(
+                    7,
+                    "[Awkernel] network service:igb-0000:00:02.0: IRQ = 65",
+                    "Waiting",
+                    0,
+                ),
+                row(
+                    8,
+                    "[Awkernel] network service:igb-0000:00:02.0: tick = 200 [msec]",
+                    "Waiting",
+                    0,
+                ),
+                row(9, "[Awkernel] shell", "Running", 3),
+                row(10, "[local_llm] service", "Running", 0),
+                row(11, "[local_llm] helper 0", "Waiting", 0),
+                row(12, "[local_llm] helper 1", "Waiting", 0),
+                row(13, "[local_llm] helper 2", "Waiting", 0),
+                row(14, "[app] sensor driver", "Running", 7),
+                row(15, "[app] logger", "Waiting", 0),
+            ],
+        }),
+        "interrupt" => {
+            let irq = |irq, name| IrqRow { irq, name };
+            if b {
+                interrupts(&[
+                    irq(36, "serial port (awkernel_shell)"),
+                    irq(65, "igb-0000:00:02.0"),
+                    irq(66, "virtio-net-0000:00:03.0"),
+                    irq(253, "local timer"),
+                    irq(255, "preemption"),
+                ])
+            } else {
+                interrupts(&[
+                    irq(36, "serial port (awkernel_shell)"),
+                    irq(64, "igb-0000:00:02.0"),
+                    irq(253, "local timer"),
+                    irq(255, "preemption"),
+                ])
+            }
+        }
+        "ifconfig" => {
+            let addr = [String::from("10.0.2.15/24")];
+            netifs(&[if b {
+                NetIf {
+                    name: "igb-0000:00:02.0",
+                    ipv4: &addr,
+                    gateway: Some("10.0.2.2"),
+                    mac: [0x52, 0x54, 0x00, 0xab, 0xcd, 0xef],
+                    link: Link::Down,
+                    speed_mbps: 100,
+                    irqs: &[65],
+                    poll_mode: false,
+                }
+            } else {
+                NetIf {
+                    name: "igb-0000:00:02.0",
+                    ipv4: &[],
+                    gateway: None,
+                    mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
+                    link: Link::UpFullDuplex,
+                    speed_mbps: 1000,
+                    irqs: &[64],
+                    poll_mode: false,
+                }
+            }])
+        }
+        _ => return None,
+    })
+}
 
 /// Facts: every group must match (any string of a group).
 type Facts = &'static [&'static [&'static str]];
@@ -150,8 +198,8 @@ const CASES: &[Case] = &[
     sys(
         "What is the uptime?",
         "task",
-        &[&["5123456"]],
-        &[&["7654321"]],
+        &[&["5.1", "5123456"]],
+        &[&["7.6", "7654321"]],
     ),
     sys("Which task has ID 7?", "task", &[&["igb"]], &[&["igb"]]),
     sys(
@@ -344,6 +392,18 @@ fn main() {
             "-t" => threads = args.next().unwrap().parse().unwrap(),
             "--no-router" => use_router = false,
             "-v" => verbose = true,
+            "--dump-tools" => {
+                for name in ["task", "interrupt", "ifconfig"] {
+                    for b in [false, true] {
+                        println!(
+                            "== {name} ({})\n{}",
+                            if b { 'B' } else { 'A' },
+                            tool_output(name, b).unwrap()
+                        );
+                    }
+                }
+                return;
+            }
             _ => panic!("unknown argument {a}"),
         }
     }
@@ -388,19 +448,7 @@ fn main() {
         };
         for &(fx, facts) in fixtures {
             let t0 = Instant::now();
-            let mut run = |name: &str| {
-                let b = fx == 'B';
-                let out = match name {
-                    "task" if b => TASK_B,
-                    "task" => TASK_A,
-                    "interrupt" if b => INTERRUPT_B,
-                    "interrupt" => INTERRUPT_A,
-                    "ifconfig" if b => IFCONFIG_B,
-                    "ifconfig" => IFCONFIG_A,
-                    _ => return None,
-                };
-                Some(String::from(out))
-            };
+            let mut run = |name: &str| tool_output(name, fx == 'B');
             agent.clear();
             agent.ask(case.q).unwrap();
             let mut answer = Vec::new();

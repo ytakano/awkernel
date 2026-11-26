@@ -15,8 +15,9 @@ extern crate alloc;
 mod executor;
 pub mod tools;
 
-/// Descriptions of the shell commands offered as tools.
-pub use awkernel_llm::tools::catalog;
+/// Descriptions of the shell commands offered as tools, and the formatting
+/// of their output for the model.
+pub use awkernel_llm::tools::{catalog, report};
 
 use alloc::{boxed::Box, collections::VecDeque, format, string::String};
 use awkernel_async_lib::scheduler::SchedulerType;

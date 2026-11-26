@@ -493,11 +493,11 @@ fn register_llm_tools() {
         },
         Tool {
             spec: catalog::INTERRUPT,
-            run: interrupt_text,
+            run: interrupt_tool_text,
         },
         Tool {
             spec: catalog::IFCONFIG,
-            run: ifconfig_text,
+            run: ifconfig_tool_text,
         },
     ];
     for t in tools {
@@ -507,35 +507,106 @@ fn register_llm_tools() {
     }
 }
 
-/// `(task)` for the LLM, in a compact form (numbers cost many tokens): the
-/// per-CPU table and totals first, then one line per task without padding
-/// and timestamps.
+/// `(task)` for the LLM: a summary with the counts already computed (a
+/// 0.6B model miscounts table rows), then one line per task.
 #[cfg(feature = "local_llm")]
 fn task_tool_text() -> String {
-    let mut out = String::from("Running tasks by CPU:\n");
-    for task in awkernel_async_lib::task::get_tasks_running().iter() {
-        if task.task_id != 0 {
-            out.push_str(&format!("cpu {}: task {}\n", task.cpu_id, task.task_id));
-        } else {
-            out.push_str(&format!("cpu {}: idle\n", task.cpu_id));
-        }
-    }
-    out.push_str(&format!(
-        "Uptime: {} us\nTotal preemption: {}\nTasks (ID, state, preemptions, name):\n",
-        awkernel_async_lib::uptime(),
-        awkernel_async_lib::task::get_num_preemption(),
-    ));
-    for t in task::get_tasks() {
+    use local_llm::report::{tasks, TaskReport, TaskRow};
+
+    let list = task::get_tasks();
+    let mut rows = Vec::new();
+    for t in list.iter() {
         let mut node = MCSNode::new();
         let info = t.info.lock(&mut node);
-        out.push_str(&format!(
-            "{}, {:?}{}, {}, {}\n",
-            t.id,
-            info.get_state(),
-            if info.panicked() { " (panicked)" } else { "" },
-            info.get_num_preemption(),
-            t.name,
-        ));
+        let state = if info.panicked() {
+            "Panicked"
+        } else {
+            match info.get_state() {
+                task::State::Initialized => "Initialized",
+                task::State::Running => "Running",
+                task::State::Runnable => "Runnable",
+                task::State::Waiting => "Waiting",
+                task::State::Preempted => "Preempted",
+                task::State::Terminated => "Terminated",
+                task::State::Panicked => "Panicked",
+            }
+        };
+        rows.push((t.id, state, info.get_num_preemption()));
     }
-    out
+    let rows: Vec<TaskRow> = list
+        .iter()
+        .zip(rows)
+        .map(|(t, (id, state, preemptions))| TaskRow {
+            id,
+            name: &t.name,
+            state,
+            preemptions,
+        })
+        .collect();
+    let cpus: Vec<(usize, Option<u32>)> = awkernel_async_lib::task::get_tasks_running()
+        .iter()
+        .map(|r| (r.cpu_id, (r.task_id != 0).then_some(r.task_id)))
+        .collect();
+    tasks(&TaskReport {
+        uptime_us: awkernel_async_lib::uptime(),
+        total_preemptions: awkernel_async_lib::task::get_num_preemption() as u64,
+        cpus: &cpus,
+        tasks: &rows,
+    })
+}
+
+/// `(interrupt)` for the LLM (summary with device kinds).
+#[cfg(feature = "local_llm")]
+fn interrupt_tool_text() -> String {
+    use local_llm::report::{interrupts, IrqRow};
+
+    let handlers = awkernel_lib::interrupt::get_handlers();
+    let rows: Vec<IrqRow> = handlers
+        .iter()
+        .map(|(irq, name)| IrqRow { irq: *irq, name })
+        .collect();
+    interrupts(&rows)
+}
+
+/// `(ifconfig)` for the LLM (summary with link state spelled out).
+#[cfg(feature = "local_llm")]
+fn ifconfig_tool_text() -> String {
+    use awkernel_lib::net::net_device::LinkStatus;
+    use local_llm::report::{netifs, Link, NetIf};
+
+    let ifs = awkernel_lib::net::get_all_interface();
+    let addrs: Vec<Vec<String>> = ifs
+        .iter()
+        .map(|i| {
+            i.ipv4_addrs
+                .iter()
+                .map(|(a, len)| format!("{a}/{len}"))
+                .collect()
+        })
+        .collect();
+    let gateways: Vec<Option<String>> = ifs
+        .iter()
+        .map(|i| i.ipv4_gateway.map(|g| format!("{g}")))
+        .collect();
+    let rows: Vec<NetIf> = ifs
+        .iter()
+        .enumerate()
+        .map(|(n, i)| NetIf {
+            name: &i.device_name,
+            ipv4: &addrs[n],
+            gateway: gateways[n].as_deref(),
+            mac: i.mac_address,
+            link: match i.link_status {
+                LinkStatus::Up => Link::Up,
+                LinkStatus::UpFullDuplex => Link::UpFullDuplex,
+                LinkStatus::UpHalfDuplex => Link::UpHalfDuplex,
+                LinkStatus::Down => Link::Down,
+                LinkStatus::Unknown => Link::Unknown,
+            },
+            speed_mbps: i.link_speed_mbs,
+            irqs: &i.irqs,
+            poll_mode: i.poll_mode,
+        })
+        .collect();
+    netifs(&rows)
 }

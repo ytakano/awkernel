@@ -214,6 +214,182 @@ pub mod catalog {
                                 system. Use the tools to answer questions about this system.";
 }
 
+/// Tool outputs written for a small model: facts that need counting or
+/// matching (how many tasks, which IRQ belongs to the network card, whether
+/// the link is up) are computed here and stated in a summary first, so the
+/// model only has to repeat them. The kernel fills in the data; the host
+/// evaluation uses the same functions.
+pub mod report {
+    use alloc::{format, string::String, vec::Vec};
+    use core::fmt::Write;
+
+    pub struct TaskRow<'a> {
+        pub id: u32,
+        pub name: &'a str,
+        /// `Running`, `Waiting`, ...
+        pub state: &'a str,
+        pub preemptions: u64,
+    }
+
+    pub struct TaskReport<'a> {
+        pub uptime_us: u64,
+        pub total_preemptions: u64,
+        /// `(cpu, running task id)` for every CPU.
+        pub cpus: &'a [(usize, Option<u32>)],
+        pub tasks: &'a [TaskRow<'a>],
+    }
+
+    /// Output of the `task` tool.
+    pub fn tasks(r: &TaskReport<'_>) -> String {
+        let name_of = |id: u32| r.tasks.iter().find(|t| t.id == id).map_or("?", |t| t.name);
+        let mut states: Vec<(&str, usize)> = Vec::new();
+        for t in r.tasks {
+            match states.iter_mut().find(|(s, _)| *s == t.state) {
+                Some((_, n)) => *n += 1,
+                None => states.push((t.state, 1)),
+            }
+        }
+        let mut s = String::from("Summary:\n");
+        let _ = write!(s, "- There are {} tasks", r.tasks.len());
+        for (i, (state, n)) in states.iter().enumerate() {
+            let _ = write!(
+                s,
+                "{}{n} {}",
+                if i == 0 { ": " } else { ", " },
+                state.to_ascii_lowercase()
+            );
+        }
+        s.push_str(".\n- Running tasks: ");
+        let running: Vec<String> = r
+            .tasks
+            .iter()
+            .filter(|t| t.state == "Running")
+            .map(|t| format!("{} \"{}\"", t.id, t.name))
+            .collect();
+        s.push_str(if running.is_empty() { "none" } else { "" });
+        s.push_str(&running.join(", "));
+        s.push_str(".\n");
+        for (cpu, task) in r.cpus {
+            match task {
+                Some(id) => {
+                    let _ = writeln!(s, "- CPU {cpu} is running task {id} \"{}\".", name_of(*id));
+                }
+                None => {
+                    let _ = writeln!(s, "- CPU {cpu} is idle.");
+                }
+            }
+        }
+        let _ = writeln!(
+            s,
+            "- Uptime: {}.{} seconds ({} us).\n- Total preemptions: {}.",
+            r.uptime_us / 1_000_000,
+            r.uptime_us / 100_000 % 10,
+            r.uptime_us,
+            r.total_preemptions
+        );
+        s.push_str("All tasks (ID \"name\": state, preemptions):\n");
+        for t in r.tasks {
+            let _ = writeln!(
+                s,
+                "- {} \"{}\": {}, {} preemptions",
+                t.id, t.name, t.state, t.preemptions
+            );
+        }
+        s
+    }
+
+    pub struct IrqRow<'a> {
+        pub irq: u16,
+        pub name: &'a str,
+    }
+
+    /// What kind of device a handler name refers to.
+    fn irq_kind(name: &str) -> Option<&'static str> {
+        const NICS: [&str; 6] = ["igb", "ixgbe", "e1000", "virtio-net", "genet", "rtl8"];
+        if NICS.iter().any(|n| name.contains(n)) {
+            Some("network interface card")
+        } else if name.contains("serial") || name.contains("uart") {
+            Some("serial port")
+        } else if name.contains("timer") {
+            Some("timer")
+        } else if name.contains("preemption") {
+            Some("task preemption by the scheduler")
+        } else {
+            None
+        }
+    }
+
+    /// Output of the `interrupt` tool.
+    pub fn interrupts(rows: &[IrqRow<'_>]) -> String {
+        let mut s = format!("Summary:\n- There are {} interrupt handlers.\n", rows.len());
+        for r in rows {
+            let _ = write!(s, "- IRQ {} is \"{}\"", r.irq, r.name);
+            if let Some(k) = irq_kind(r.name) {
+                let _ = write!(s, " ({k})");
+            }
+            s.push_str(".\n");
+        }
+        s
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Link {
+        Up,
+        UpFullDuplex,
+        UpHalfDuplex,
+        Down,
+        Unknown,
+    }
+
+    pub struct NetIf<'a> {
+        pub name: &'a str,
+        /// `"10.0.2.15/24"`, ...
+        pub ipv4: &'a [String],
+        pub gateway: Option<&'a str>,
+        pub mac: [u8; 6],
+        pub link: Link,
+        pub speed_mbps: u64,
+        pub irqs: &'a [u16],
+        pub poll_mode: bool,
+    }
+
+    /// Output of the `ifconfig` tool.
+    pub fn netifs(ifs: &[NetIf<'_>]) -> String {
+        let mut s = format!(
+            "Summary:\n- There {} {} network interface{}.\n",
+            if ifs.len() == 1 { "is" } else { "are" },
+            ifs.len(),
+            if ifs.len() == 1 { "" } else { "s" }
+        );
+        for i in ifs {
+            let m = i.mac;
+            let _ = write!(
+                s,
+                "Interface \"{}\":\n- MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                i.name, m[0], m[1], m[2], m[3], m[4], m[5]
+            );
+            if i.ipv4.is_empty() {
+                s.push_str("- IPv4 address: none (no address is assigned)\n");
+            } else {
+                let _ = writeln!(s, "- IPv4 address: {}", i.ipv4.join(", "));
+            }
+            let _ = writeln!(s, "- Default gateway: {}", i.gateway.unwrap_or("none"));
+            let link = match i.link {
+                Link::Up => "up (the cable is connected)",
+                Link::UpFullDuplex => "up (the cable is connected), full duplex",
+                Link::UpHalfDuplex => "up (the cable is connected), half duplex",
+                Link::Down => "down (the cable is not connected)",
+                Link::Unknown => "unknown",
+            };
+            let _ = writeln!(s, "- Link: {link}, speed {} Mbps", i.speed_mbps);
+            let irqs: Vec<String> = i.irqs.iter().map(|q| format!("{q}")).collect();
+            let _ = writeln!(s, "- IRQs used by this interface: {}", irqs.join(", "));
+            let _ = writeln!(s, "- Poll mode: {}", if i.poll_mode { "yes" } else { "no" });
+        }
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +415,61 @@ mod tests {
         assert_eq!(parse_tool_call("{\"name\": 3}"), None);
         assert_eq!(parse_tool_call("{\"name\": \"a\\\"b\"}"), None);
         assert_eq!(parse_tool_call("{\"name"), None);
+    }
+
+    #[test]
+    fn reports_state_counts() {
+        use report::*;
+        let tasks = [
+            TaskRow {
+                id: 2,
+                name: "logger",
+                state: "Waiting",
+                preemptions: 0,
+            },
+            TaskRow {
+                id: 3,
+                name: "shell",
+                state: "Running",
+                preemptions: 1,
+            },
+            TaskRow {
+                id: 4,
+                name: "net",
+                state: "Waiting",
+                preemptions: 0,
+            },
+        ];
+        let t = report::tasks(&TaskReport {
+            uptime_us: 5_123_456,
+            total_preemptions: 1,
+            cpus: &[(0, None), (1, Some(3))],
+            tasks: &tasks,
+        });
+        assert!(
+            t.contains("There are 3 tasks: 2 waiting, 1 running."),
+            "{t}"
+        );
+        assert!(t.contains("CPU 1 is running task 3 \"shell\"."));
+        assert!(t.contains("Uptime: 5.1 seconds"));
+        let i = report::interrupts(&[IrqRow {
+            irq: 64,
+            name: "igb-0000:00:02.0",
+        }]);
+        assert!(i.contains("IRQ 64 is \"igb-0000:00:02.0\" (network interface card)."));
+        let n = report::netifs(&[NetIf {
+            name: "igb0",
+            ipv4: &[],
+            gateway: None,
+            mac: [0x52, 0x54, 0, 0x12, 0x34, 0x56],
+            link: Link::Down,
+            speed_mbps: 100,
+            irqs: &[65],
+            poll_mode: false,
+        }]);
+        assert!(n.contains("MAC address: 52:54:00:12:34:56"));
+        assert!(n.contains("Link: down (the cable is not connected)"));
+        assert!(n.contains("IPv4 address: none"));
     }
 
     #[test]
