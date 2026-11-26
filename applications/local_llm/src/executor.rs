@@ -13,11 +13,17 @@
 //!
 //! Wake-up latency of a sleeping task (tens of microseconds) is comparable to
 //! one loop, so while an answer is generated the helpers spin waiting for the
-//! next loop, yielding now and then so other tasks on their CPUs still run.
-//! Between answers they sleep.
+//! next loop, yielding about every millisecond so that other tasks on their
+//! CPUs still run. Between answers they sleep.
+//!
+//! Panics: a chunk that panics still counts as finished, and `par_for` does not
+//! return or unwind past its frame before every claimed chunk has finished,
+//! so no helper uses the closure after it is gone. A panic in a helper is
+//! re-raised in the service task.
 
 use alloc::{boxed::Box, format, sync::Arc};
 use awkernel_async_lib::scheduler::SchedulerType;
+use awkernel_lib::time::Instant;
 use awkernel_llm::{exec::chunk, Executor, InlineExecutor};
 use core::{
     cell::UnsafeCell,
@@ -31,10 +37,12 @@ use core::{
 const MAX_HELPERS: usize = 3;
 /// Chunks per participating task (dynamic load balancing).
 const CHUNKS_PER_TASK: usize = 4;
-/// Spin iterations without work before a helper yields its CPU.
-const SPIN_BEFORE_YIELD: u32 = 20_000;
+/// A spinning helper yields its CPU after this long.
+const YIELD_INTERVAL: Duration = Duration::from_millis(1);
 /// Sleep of an idle helper (no answer in progress).
 const IDLE_SLEEP: Duration = Duration::from_millis(5);
+
+const NEXT_MASK: u64 = 0xffff;
 
 /// The executor used by the service task, and a handle to (de)activate the
 /// helpers around an answer.
@@ -67,46 +75,57 @@ pub(crate) fn create() -> (Box<dyn Executor + Send>, Option<Arc<Shared>>) {
     )
 }
 
-/// The current loop. Written by the service task only while no chunk of the
-/// previous loop is outstanding; read by a helper only while it holds a
-/// claimed chunk of the current loop.
+/// The current loop. Written by the caller of `par_for` only while no chunk
+/// of the previous loop is outstanding; read by a helper only while it holds
+/// a claimed chunk of the current loop.
 struct Job {
     f: *const (dyn Fn(Range<usize>) + Sync + 'static),
     n: usize,
     chunks: usize,
 }
 
+fn noop(_: Range<usize>) {}
+static NOOP: fn(Range<usize>) = noop;
+
+/// Keeps a value on its own cache line.
+#[repr(align(64))]
+struct CacheLine<T>(T);
+
 pub(crate) struct Shared {
-    /// `generation << 32 | chunks << 16 | next`.
-    ticket: AtomicU64,
-    /// Chunks of the current loop that have finished.
-    done: AtomicUsize,
+    /// `generation << 32 | chunks << 16 | next`. Read together with `job`
+    /// and `active`, which share its line.
+    ticket: CacheLine<AtomicU64>,
+    /// Chunks of the current loop that have finished (polled by the caller;
+    /// on its own line so that finishing does not disturb claiming).
+    done: CacheLine<AtomicUsize>,
     job: UnsafeCell<Job>,
     /// An answer is being generated: helpers spin instead of sleeping.
     active: AtomicBool,
+    /// A `par_for` is running (the protocol supports one caller at a time).
+    in_use: AtomicBool,
+    /// A chunk panicked in a helper.
+    poisoned: AtomicBool,
     tasks: usize,
 }
 
-// SAFETY: `job` is only accessed under the ticket protocol described above.
+// SAFETY: `job` is only accessed under the ticket protocol described above,
+// and `in_use` admits one `par_for` at a time.
 unsafe impl Sync for Shared {}
 unsafe impl Send for Shared {}
-
-const NEXT_MASK: u64 = 0xffff;
-
-fn noop(_: Range<usize>) {}
-static NOOP: fn(Range<usize>) = noop;
 
 impl Shared {
     fn new(tasks: usize) -> Self {
         Self {
-            ticket: AtomicU64::new(0),
-            done: AtomicUsize::new(0),
+            ticket: CacheLine(AtomicU64::new(0)),
+            done: CacheLine(AtomicUsize::new(0)),
             job: UnsafeCell::new(Job {
                 f: &NOOP,
                 n: 0,
                 chunks: 0,
             }),
             active: AtomicBool::new(false),
+            in_use: AtomicBool::new(false),
+            poisoned: AtomicBool::new(false),
             tasks,
         }
     }
@@ -121,7 +140,7 @@ impl Shared {
     fn work(&self) -> bool {
         let mut worked = false;
         loop {
-            let t = self.ticket.load(Ordering::Acquire);
+            let t = self.ticket.0.load(Ordering::Acquire);
             let chunks = (t >> 16) & NEXT_MASK;
             let next = t & NEXT_MASK;
             if next >= chunks {
@@ -129,22 +148,76 @@ impl Shared {
             }
             if self
                 .ticket
+                .0
                 .compare_exchange_weak(t, t + 1, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
                 continue;
             }
             // SAFETY: holding an unfinished chunk of the current loop, so the
-            // service task cannot replace the job or return from `par_for`
-            // (which keeps the closure alive).
+            // caller cannot replace the job or leave `par_for` (which keeps
+            // the closure alive).
             let (f, n, chunks) = unsafe {
                 let job = &*self.job.get();
                 (&*job.f, job.n, job.chunks)
             };
+            let mut guard = ChunkDone {
+                shared: self,
+                finished: false,
+            };
             f(range(n, chunks, next as usize));
-            self.done.fetch_add(1, Ordering::Release);
+            guard.finished = true;
             worked = true;
         }
+    }
+}
+
+/// Counts a claimed chunk as done even if it panics.
+struct ChunkDone<'a> {
+    shared: &'a Shared,
+    finished: bool,
+}
+
+impl Drop for ChunkDone<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.shared.poisoned.store(true, Ordering::Release);
+        }
+        self.shared.done.0.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Ends the current loop in `par_for`, also when unwinding: stops further
+/// claims and waits for every claimed chunk, so that no helper still runs the
+/// closure when `par_for`'s frame (and the closure's captures) go away.
+struct LoopEnd<'a> {
+    shared: &'a Shared,
+}
+
+impl Drop for LoopEnd<'_> {
+    fn drop(&mut self) {
+        let s = self.shared;
+        let mut t = s.ticket.0.load(Ordering::Acquire);
+        let claimed = loop {
+            let chunks = (t >> 16) & NEXT_MASK;
+            let next = t & NEXT_MASK;
+            if next >= chunks {
+                break chunks;
+            }
+            let closed = (t & !NEXT_MASK) | chunks;
+            match s
+                .ticket
+                .0
+                .compare_exchange_weak(t, closed, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break next,
+                Err(cur) => t = cur,
+            }
+        };
+        while (s.done.0.load(Ordering::Acquire) as u64) < claimed {
+            core::hint::spin_loop();
+        }
+        s.in_use.store(false, Ordering::Release);
     }
 }
 
@@ -165,29 +238,33 @@ unsafe impl Executor for TaskPool {
         }
         let s = &*self.shared;
         let chunks = n.min(s.tasks * CHUNKS_PER_TASK).min(NEXT_MASK as usize);
-        if chunks <= 1 {
+        // One caller at a time; a concurrent caller runs its loop alone.
+        if chunks <= 1 || s.in_use.swap(true, Ordering::Acquire) {
             f(0..n);
             return;
         }
 
-        // SAFETY: all chunks of the previous loop have finished (we waited
-        // for them), so no helper reads `job` now. The lifetime of `f` is
-        // erased; `f` outlives every use because we wait for all chunks
-        // before returning.
+        // SAFETY: all chunks of the previous loop have finished (`LoopEnd`
+        // waited for them), so no helper reads `job` now. The lifetime of `f`
+        // is erased; `f` outlives every use because `LoopEnd` waits for all
+        // claimed chunks before this frame is left, even when unwinding.
         unsafe {
             let f: &(dyn Fn(Range<usize>) + Sync + 'static) = core::mem::transmute(f);
             *s.job.get() = Job { f, n, chunks };
         }
-        s.done.store(0, Ordering::Relaxed);
-        let generation = (s.ticket.load(Ordering::Relaxed) >> 32).wrapping_add(1) & 0xffff_ffff;
-        s.ticket.store(
+        s.done.0.store(0, Ordering::Relaxed);
+        let generation = (s.ticket.0.load(Ordering::Relaxed) >> 32).wrapping_add(1) & 0xffff_ffff;
+        s.ticket.0.store(
             (generation << 32) | ((chunks as u64) << 16),
             Ordering::Release,
         );
 
+        let end = LoopEnd { shared: s };
         s.work();
-        while s.done.load(Ordering::Acquire) < chunks {
-            core::hint::spin_loop();
+        drop(end); // waits for the helpers' chunks
+
+        if s.poisoned.load(Ordering::Acquire) {
+            panic!("local_llm: a helper task panicked");
         }
     }
 }
@@ -198,16 +275,18 @@ async fn helper(s: Arc<Shared>) {
             awkernel_async_lib::sleep(IDLE_SLEEP).await;
             continue;
         }
-        let mut idle = 0u32;
-        while idle < SPIN_BEFORE_YIELD {
-            if s.work() {
-                idle = 0;
-            } else {
-                idle += 1;
+        let start = Instant::now();
+        let mut spins = 0u32;
+        while s.active.load(Ordering::Relaxed) {
+            if !s.work() {
                 core::hint::spin_loop();
             }
+            spins = spins.wrapping_add(1);
+            if spins % 256 == 0 && start.elapsed() >= YIELD_INTERVAL {
+                break;
+            }
         }
-        // Let other tasks on this CPU run (also between tokens).
+        // Let other tasks on this CPU run.
         awkernel_async_lib::r#yield().await;
     }
 }

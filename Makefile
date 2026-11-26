@@ -194,7 +194,9 @@ QEMU_X86_KVM_ARGS= -enable-kvm -cpu host -machine q35 -m $(KVM_MEM) -smp $(KVM_S
 QEMU_X86_KVM_ARGS+= -drive if=pflash,format=raw,readonly=on,file=$(KVM_OVMF)/code.fd
 QEMU_X86_KVM_ARGS+= -drive if=pflash,format=raw,file=$(KVM_OVMF)/vars_kvm.fd
 QEMU_X86_KVM_ARGS+= -drive format=raw,file=x86_64_uefi.img
-QEMU_X86_KVM_ARGS+= -nographic -monitor telnet::$(QEMUPORT),server,nowait
+# Serial console and QEMU monitor on stdio: Ctrl-A x quits, Ctrl-A c toggles
+# the monitor, Ctrl-C goes to the guest.
+QEMU_X86_KVM_ARGS+= -display none -serial mon:stdio
 
 qemu-x86_64-kvm:
 	cp $(KVM_OVMF)/vars.fd $(KVM_OVMF)/vars_kvm.fd
