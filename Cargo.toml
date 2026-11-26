@@ -8,6 +8,7 @@ members = [
     "awkernel_async_lib",
     "awkernel_lib_verified",
     "awkernel_lib",
+    "awkernel_llm",
     "awkernel_drivers",
     "applications/awkernel_services",
     "applications/awkernel_shell",

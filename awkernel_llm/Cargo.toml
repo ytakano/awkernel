@@ -1,0 +1,17 @@
+[package]
+name = "awkernel_llm"
+version = "0.1.0"
+edition = "2021"
+description = "no_std Qwen3-0.6B (Q8_0 .asmbin) inference engine"
+
+[dependencies]
+libm = "0.2"
+
+[features]
+default = []
+# Host-only helpers: a thread-based executor and the `llm_cli` example.
+std = []
+
+[[example]]
+name = "llm_cli"
+required-features = ["std"]

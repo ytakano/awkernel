@@ -234,6 +234,7 @@ test: FORCE
 	cargo test_awkernel_drivers
 	cargo test_smoltcp
 	cargo test_rd_gen_to_dags
+	cargo test_awkernel_llm
 
 # Format
 
