@@ -20,5 +20,10 @@ default-features = false
 path = "../../awkernel_lib"
 default-features = false
 
+[dependencies.local_llm]
+path = "../local_llm"
+optional = true
+
 [features]
 perf = []
+local_llm = ["dep:local_llm"]

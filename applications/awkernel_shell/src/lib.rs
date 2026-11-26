@@ -58,11 +58,25 @@ async fn console_handler() -> TaskResult {
     #[cfg(feature = "perf")]
     functions.push(Box::new(PerfFfi));
 
-    let code = if cfg!(feature = "perf") {
-        format!("{CODE}\r\n{PERF_CODE}")
-    } else {
-        CODE.to_string()
-    };
+    #[cfg(feature = "local_llm")]
+    {
+        functions.push(Box::new(LlmFfi));
+        functions.push(Box::new(LlmClearFfi));
+        functions.push(Box::new(LlmThinkFfi));
+    }
+
+    #[allow(unused_mut)]
+    let mut code = CODE.to_string();
+    #[cfg(feature = "perf")]
+    {
+        code.push_str("\r\n");
+        code.push_str(PERF_CODE);
+    }
+    #[cfg(feature = "local_llm")]
+    {
+        code.push_str("\r\n");
+        code.push_str(LLM_CODE);
+    }
 
     let exprs = blisp::init(&code, functions).unwrap();
     let blisp_ctx = blisp::typing(exprs).unwrap();
@@ -109,7 +123,39 @@ async fn console_handler() -> TaskResult {
                     // Evaluate the line.
                     eval(line_u8, &blisp_ctx);
 
+                    // `(llm ...)` streams its answer from another task; keep
+                    // the prompt until it is done. Ctrl-C stops the answer;
+                    // a second Ctrl-C stops waiting (e.g. if the service died).
+                    // Other keys are kept as the start of the next line.
+                    #[cfg(feature = "local_llm")]
+                    let typed = {
+                        let mut typed = Vec::new();
+                        let mut interrupts = 0;
+                        while local_llm::is_busy() && interrupts < 2 {
+                            while let Some(c) = console::get() {
+                                if c == 0x03 {
+                                    local_llm::cancel();
+                                    interrupts += 1;
+                                } else if c >= 0x20 && c != 0x7f {
+                                    typed.push(c);
+                                }
+                            }
+                            sleep(Duration::from_millis(20)).await;
+                        }
+                        typed
+                    };
+
                     console::print("\r\n> ");
+
+                    line.clear();
+                    #[cfg(feature = "local_llm")]
+                    if let Ok(s) = alloc::str::from_utf8(&typed) {
+                        if !IS_STD {
+                            console::print(s);
+                        }
+                        line.extend_from_slice(&typed);
+                    }
+                    continue;
                 } else {
                     console::print("Error: Input string is not UTF-8.");
                 }
@@ -136,6 +182,12 @@ fn eval(expr: &str, ctx: &blisp::semantics::Context) {
             for result in results {
                 match result {
                     Ok(msg) => {
+                        // An accepted `(llm ...)` request returns `[]` and its
+                        // answer follows asynchronously; don't print the `[]`.
+                        #[cfg(feature = "local_llm")]
+                        if msg == "[]" && local_llm::is_busy() {
+                            continue;
+                        }
                         console::print(&msg);
                     }
                     Err(e) => {
@@ -182,6 +234,7 @@ const CODE: &str = "(export factorial (n) (Pure (-> (Int) Int))
     (shutdown_ffi))
 ";
 
+#[cfg(feature = "perf")]
 const PERF_CODE: &str = "(export perf () (IO (-> () []))
     (perf_ffi))";
 
@@ -204,6 +257,15 @@ fn help_ffi() {
 
     #[cfg(feature = "perf")]
     lines.push_str("(perf)      ; print performance information\r\n");
+
+    #[cfg(feature = "local_llm")]
+    {
+        lines.push_str(
+            "(llm \"text\")      ; chat with the local LLM (Ctrl-C stops the answer)\r\n",
+        );
+        lines.push_str("(llm_clear)       ; forget the conversation\r\n");
+        lines.push_str("(llm_think true)  ; enable/disable reasoning (<think>)\r\n");
+    }
 
     console::print(lines.as_str());
 }
@@ -370,4 +432,39 @@ fn print_tasks() {
 
         console::print(&msg);
     }
+}
+
+#[cfg(feature = "local_llm")]
+const LLM_CODE: &str = "(export llm (text) (IO (-> (String) []))
+    (llm_ffi text))
+
+(export llm_clear () (IO (-> () []))
+    (llm_clear_ffi))
+
+(export llm_think (on) (IO (-> (Bool) []))
+    (llm_think_ffi on))";
+
+#[cfg(feature = "local_llm")]
+fn llm_submit(req: local_llm::Request) {
+    if let Err(e) = local_llm::submit(req) {
+        console::print(&format!("llm: {e}\r\n"));
+    }
+}
+
+#[cfg(feature = "local_llm")]
+#[embedded]
+fn llm_ffi(text: String) {
+    llm_submit(local_llm::Request::Chat(text));
+}
+
+#[cfg(feature = "local_llm")]
+#[embedded]
+fn llm_clear_ffi() {
+    llm_submit(local_llm::Request::Clear);
+}
+
+#[cfg(feature = "local_llm")]
+#[embedded]
+fn llm_think_ffi(on: bool) {
+    llm_submit(local_llm::Request::Think(on));
 }

@@ -94,6 +94,10 @@ optional = true
 path = "../applications/tests/test_llft"
 optional = true
 
+[dependencies.local_llm]
+path = "../applications/local_llm"
+optional = true
+
 [dependencies.test_avx_preempt]
 path = "../applications/tests/test_avx_preempt"
 optional = true
@@ -117,6 +121,10 @@ heap-wf-alloc = ["awkernel/heap-wf-alloc"]
 spinlock = ["awkernel/spinlock"]
 linux = ["awkernel/linux"]
 period-index-propagation = ["awkernel/period-index-propagation"]
+
+# Local LLM chat (Qwen3-0.6B from the ramdisk), with `(llm "...")` in the shell
+local_llm = ["dep:local_llm", "awkernel_services/local_llm"]
+local_llm_selftest = ["local_llm", "local_llm/selftest"]
 
 # Evaluation applications
 rd_gen_to_dags = ["dep:rd_gen_to_dags"]

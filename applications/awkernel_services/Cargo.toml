@@ -25,3 +25,4 @@ path = "../awkernel_display"
 
 [features]
 perf = ["awkernel_shell/perf"]
+local_llm = ["awkernel_shell/local_llm"]

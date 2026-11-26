@@ -8,6 +8,9 @@ use alloc::borrow::Cow;
 pub async fn run() -> Result<(), Cow<'static, str>> {
     awkernel_services::run().await;
 
+    #[cfg(feature = "local_llm")]
+    local_llm::run().await; // local LLM chat service
+
     #[cfg(feature = "autoware")]
     autoware::run().await; // run the autoware application
 
