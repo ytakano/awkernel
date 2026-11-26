@@ -51,8 +51,13 @@ impl Sampler {
     }
 
     pub fn sample(&mut self, logits: &[f32]) -> u32 {
+        self.sample_except(logits, None)
+    }
+
+    /// Like [`Sampler::sample`], but never returns `banned`.
+    pub fn sample_except(&mut self, logits: &[f32], banned: Option<u32>) -> u32 {
         if self.is_greedy() {
-            return kernels::argmax(logits) as u32;
+            return argmax_except(logits, banned);
         }
 
         let r = self.next_f32();
@@ -60,6 +65,9 @@ impl Sampler {
         let inv_t = 1.0 / self.temperature;
         for (p, &l) in probs.iter_mut().zip(logits) {
             *p = l * inv_t;
+        }
+        if let Some(b) = banned {
+            probs[b as usize] = f32::NEG_INFINITY;
         }
         kernels::softmax(self.backend, probs);
 
@@ -81,7 +89,7 @@ impl Sampler {
         );
         if self.cand.is_empty() {
             // Only possible with NaN/inf logits or top_p < 1/V.
-            return kernels::argmax(logits) as u32;
+            return argmax_except(logits, banned);
         }
         self.cand
             .sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
@@ -116,6 +124,22 @@ impl Sampler {
     }
 }
 
+fn argmax_except(logits: &[f32], banned: Option<u32>) -> u32 {
+    let best = kernels::argmax(logits) as u32;
+    match banned {
+        Some(b) if b == best => {
+            let mut best = usize::from(b == 0);
+            for (i, &v) in logits.iter().enumerate() {
+                if i != b as usize && v > logits[best] {
+                    best = i;
+                }
+            }
+            best as u32
+        }
+        _ => best,
+    }
+}
+
 fn sample_cdf(probs: &[f32], r: f32) -> u32 {
     let mut acc = 0.0f32;
     for (i, &p) in probs.iter().enumerate() {
@@ -135,6 +159,17 @@ mod tests {
     fn greedy_takes_first_max() {
         let mut s = Sampler::new(Backend::SCALAR, 4, 0.0, 0.9, 1).unwrap();
         assert_eq!(s.sample(&[0.0, 3.0, 3.0, 1.0]), 1);
+    }
+
+    #[test]
+    fn banned_token_is_skipped() {
+        let mut s = Sampler::new(Backend::SCALAR, 4, 0.0, 0.9, 1).unwrap();
+        assert_eq!(s.sample_except(&[0.0, 3.0, 2.0, 1.0], Some(1)), 2);
+        assert_eq!(s.sample_except(&[5.0, 3.0], Some(0)), 1);
+        let mut s = Sampler::new(Backend::SCALAR, 3, 1.0, 1.0, 1).unwrap();
+        for _ in 0..50 {
+            assert_ne!(s.sample_except(&[9.0, 0.0, 0.0], Some(0)), 0);
+        }
     }
 
     #[test]

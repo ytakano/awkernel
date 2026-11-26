@@ -13,6 +13,10 @@
 extern crate alloc;
 
 mod executor;
+pub mod tools;
+
+/// Descriptions of the shell commands offered as tools.
+pub use awkernel_llm::tools::catalog;
 
 use alloc::{boxed::Box, collections::VecDeque, format, string::String};
 use awkernel_async_lib::scheduler::SchedulerType;
@@ -22,7 +26,8 @@ use awkernel_lib::{
     time::Instant,
 };
 use awkernel_llm::{
-    utf8::Utf8Stream, Backend, Chat, ChatConfig, Event, Executor, Model, StopReason,
+    router::Router, utf8::Utf8Stream, Agent, AgentConfig, AgentEvent, AgentStop, Backend, Chat,
+    ChatConfig, Executor, Model,
 };
 use core::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
@@ -33,6 +38,9 @@ use core::{
 pub const CONTEXT_LEN: usize = 2048;
 /// Maximum number of tokens generated per answer.
 pub const MAX_NEW_TOKENS: usize = 512;
+/// Tool calls allowed per question (agent loop budget).
+pub const MAX_TOOL_STEPS: usize = 2;
+
 /// Upper bound for a prompt in bytes (tokenization is O(n^2)).
 pub const MAX_PROMPT_BYTES: usize = 4096;
 
@@ -136,11 +144,10 @@ impl Drop for ServiceGuard {
 
 async fn service() {
     let _guard = ServiceGuard;
-    let Some(chat) = load() else {
+    let Some(mut agent) = load() else {
         STATUS.store(Status::Unavailable as u8, Ordering::Release);
         return;
     };
-    let mut chat = chat;
     let (exec, pool) = executor::create();
     let set_active = |on: bool| {
         if let Some(p) = &pool {
@@ -151,9 +158,15 @@ async fn service() {
     #[cfg(feature = "selftest")]
     {
         set_active(true);
-        selftest::run(&mut chat, exec.as_ref()).await;
+        selftest::run(agent.chat_mut(), exec.as_ref()).await;
         set_active(false);
     }
+
+    // Tools are registered by the shell during boot, before this task runs.
+    let mut tools_version = usize::MAX;
+    set_active(true);
+    update_tools(&mut agent, &mut tools_version, exec.as_ref()).await;
+    set_active(false);
 
     STATUS.store(Status::Ready as u8, Ordering::Release);
     log::info!("{SERVICE_NAME}: ready. Try (llm \"Hello\") in the shell.");
@@ -164,39 +177,42 @@ async fn service() {
             let mut queue = REQUESTS.lock(&mut node);
             queue.pop_front()
         };
-        match req {
+        let Some(req) = req else {
             // Requests come from the shell at human speed, so polling is
             // cheap and keeps the interface lock-free.
-            None => {
-                awkernel_async_lib::sleep(Duration::from_millis(50)).await;
-            }
-            Some(req) => {
-                match req {
-                    Request::Chat(text) => {
-                        set_active(true);
-                        answer(&mut chat, &text, exec.as_ref()).await;
-                        set_active(false);
-                    }
-                    Request::Clear => {
-                        chat.clear();
-                        console::print("[llm] conversation cleared\r\n");
-                    }
-                    Request::Think(on) => {
-                        chat.set_think(on);
-                        console::print(if on {
-                            "[llm] think: on\r\n"
-                        } else {
-                            "[llm] think: off\r\n"
-                        });
-                    }
-                }
+            awkernel_async_lib::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
+        match req {
+            Request::Chat(text) => {
+                set_active(true);
+                update_tools(&mut agent, &mut tools_version, exec.as_ref()).await;
+                answer(&mut agent, &text, exec.as_ref()).await;
+                // The answer is complete: let the shell continue while the
+                // history is compacted (one more second of work).
                 BUSY.store(false, Ordering::Release);
+                run_until_idle(&mut agent, exec.as_ref()).await;
+                set_active(false);
+                continue;
+            }
+            Request::Clear => {
+                agent.clear();
+                console::print("[llm] conversation cleared\r\n");
+            }
+            Request::Think(on) => {
+                agent.set_think(on);
+                console::print(if on {
+                    "[llm] think: on\r\n"
+                } else {
+                    "[llm] think: off\r\n"
+                });
             }
         }
+        BUSY.store(false, Ordering::Release);
     }
 }
 
-fn load() -> Option<Chat<'static>> {
+fn load() -> Option<Agent<'static>> {
     let Some(data) = awkernel_lib::ramdisk::get() else {
         log::warn!("{SERVICE_NAME}: no ramdisk (build with RAMDISK=<model.asmbin>)");
         return None;
@@ -232,7 +248,12 @@ fn load() -> Option<Chat<'static>> {
                 chat.transformer().memory_bytes() >> 20,
                 backend.name()
             );
-            Some(chat)
+            let agent_cfg = AgentConfig {
+                max_tool_steps: MAX_TOOL_STEPS,
+                max_new_tokens: MAX_NEW_TOKENS,
+                ..Default::default()
+            };
+            Some(Agent::new(chat, agent_cfg))
         }
         Err(e) => {
             log::warn!("{SERVICE_NAME}: failed to allocate the model state: {e}");
@@ -253,81 +274,141 @@ fn select_backend() -> Backend {
     backend
 }
 
-/// Generates one answer, streaming it to the console.
-async fn answer(chat: &mut Chat<'static>, prompt: &str, exec: &(dyn Executor + Send)) {
-    match chat.start_turn(prompt) {
-        Ok(true) => console::print("[llm] context full; the conversation was reset\r\n"),
-        Ok(false) => {}
-        Err(e) => {
-            console::print(&format!("[llm] error: {e}\r\n"));
-            return;
-        }
+/// Sets up the tools (system prompt and router) if tools were registered
+/// since the last call, and processes both prompts ahead of the first
+/// question. Clears the conversation, which only happens at boot.
+async fn update_tools(
+    agent: &mut Agent<'static>,
+    version: &mut usize,
+    exec: &(dyn Executor + Send),
+) {
+    let v = tools::version();
+    if v == *version {
+        return;
     }
-    // Prompt tokens actually processed (fewer if cancelled during prefill;
-    // more if tokens carried over from the previous turn were fed first).
-    let mut n_prompt = 0;
+    *version = v;
+    let specs = tools::seal();
+    if specs.is_empty() {
+        return;
+    }
+    let model = agent.chat().model();
+    let backend = agent.chat().transformer().backend();
+    let router = match Router::new(
+        model,
+        &specs,
+        catalog::NO_TOOL_EXAMPLES,
+        backend,
+        awkernel_llm::router::DEFAULT_LEN,
+    ) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            log::warn!("{SERVICE_NAME}: no tool router: {e}");
+            None
+        }
+    };
+    if let Err(e) = agent.set_tools(&specs, Some(catalog::PREAMBLE), router) {
+        log::warn!("{SERVICE_NAME}: cannot use the tools: {e}");
+        return;
+    }
+    let start = Instant::now();
+    agent.warm_up();
+    run_until_idle(agent, exec).await;
+    log::info!(
+        "{SERVICE_NAME}: tools {:?} ready in {:.1} s",
+        specs.iter().map(|t| t.name).collect::<alloc::vec::Vec<_>>(),
+        start.elapsed().as_secs_f64()
+    );
+}
+
+/// Steps the agent until it is idle (background work), yielding between steps.
+async fn run_until_idle(agent: &mut Agent<'static>, exec: &(dyn Executor + Send)) {
+    let mut run = |name: &str| tools::run(name);
+    let mut told = false;
+    while agent.step(exec, &mut run) != AgentEvent::Idle {
+        if !told && is_busy() {
+            // A new request is waiting for this background work.
+            console::print("[llm] finishing the previous answer...\r\n");
+            told = true;
+        }
+        awkernel_async_lib::r#yield().await;
+    }
+}
+
+/// Answers `question`, streaming the text to the console. The model may
+/// call tools (see `awkernel_llm::agent`); each call is shown as one line.
+async fn answer(agent: &mut Agent<'static>, question: &str, exec: &(dyn Executor + Send)) {
+    if let Err(e) = agent.ask(question) {
+        console::print(&format!("[llm] error: {e}\r\n"));
+        return;
+    }
 
     let start = Instant::now();
     let mut first: Option<Instant> = None;
     let mut utf8 = Utf8Stream::new();
     let mut out = String::new();
-    let mut stop = None;
+    let mut run = |name: &str| tools::run(name);
 
-    loop {
+    let summary = loop {
         if CANCEL.swap(false, Ordering::AcqRel) {
-            chat.cancel();
-            break;
+            agent.cancel();
+            break None;
         }
-        match chat.step(exec) {
-            Ok(Event::Prefill { .. }) => n_prompt += 1,
-            Ok(Event::Token(tok)) => {
-                if first.is_none() {
-                    first = Some(Instant::now());
-                    n_prompt += 1; // the last prompt token
-                }
+        match agent.step(exec, &mut run) {
+            AgentEvent::Busy => {}
+            AgentEvent::Token(tok) => {
+                first.get_or_insert_with(Instant::now);
                 out.clear();
-                utf8.push(chat.token_bytes(tok), &mut out);
+                utf8.push(agent.chat().token_bytes(tok), &mut out);
                 print_text(&out);
             }
-            Ok(Event::Done(reason)) => {
-                if first.is_none() {
-                    // The turn ended right after the last prompt token.
-                    first = Some(Instant::now());
-                    n_prompt += 1;
-                }
-                stop = Some(reason);
-                break;
+            AgentEvent::ToolCall { name, routed } => {
+                console::print(&format!(
+                    "[llm] -> {name}(){}\r\n",
+                    if routed { "" } else { " (by the model)" }
+                ));
             }
-            Err(e) => {
-                console::print(&format!("\r\n[llm] error: {e}\r\n"));
-                break;
+            AgentEvent::Answered(s) => break Some(s),
+            AgentEvent::Idle => {
+                console::print("\r\n[llm] internal error: the agent stopped\r\n");
+                return;
             }
         }
         awkernel_async_lib::r#yield().await;
-    }
+    };
 
     out.clear();
     utf8.finish(&mut out);
     print_text(&out);
 
     let end = Instant::now();
-    let prefill = first.unwrap_or(end) - start;
-    let decode = first.map(|f| end - f).unwrap_or_default();
-    let n_gen = chat.generated();
-    let reason = match stop {
-        Some(StopReason::Eos) => "",
-        Some(StopReason::MaxTokens) => " (max tokens)",
-        Some(StopReason::ContextFull) => " (context full)",
-        None => " (cancelled)",
+    let first = first.unwrap_or(end);
+    let Some(s) = summary else {
+        console::print("\r\n[llm] (cancelled; the question was forgotten)\r\n");
+        return;
     };
+    let stop = match s.stop {
+        AgentStop::Answer => String::new(),
+        AgentStop::MaxTokens => String::from(" (max tokens)"),
+        AgentStop::ContextFull => String::from(" (context full)"),
+        AgentStop::MalformedCall => String::from(" (malformed tool call)"),
+        AgentStop::Cancelled => String::from(" (cancelled)"),
+        AgentStop::Error(e) => format!(" (error: {e})"),
+    };
+    let tools = match s.tool_calls {
+        0 => String::from("no tool used"),
+        1 => String::from("1 tool call"),
+        n => format!("{n} tool calls"),
+    };
+    let prefill = first - start;
+    let decode = end - first;
     console::print(&format!(
-        "\r\n[llm] prompt {n_prompt} tok {:.2} s ({:.1} tok/s), answer {n_gen} tok {:.2} s ({:.1} tok/s), ctx {}/{}{reason}\r\n",
+        "\r\n[llm] {tools}; first token after {:.2} s ({} prompt tok), answer {} tok {:.2} s ({:.1} tok/s), ctx {}/{}{stop}\r\n",
         prefill.as_secs_f64(),
-        rate(n_prompt, prefill),
+        s.prompt_tokens,
+        s.answer_tokens,
         decode.as_secs_f64(),
-        // The first answer token comes out of the prefill.
-        rate(n_gen.saturating_sub(1), decode),
-        chat.context_len(),
+        rate(s.answer_tokens.saturating_sub(1), decode),
+        agent.chat().context_len(),
         CONTEXT_LEN,
     ));
 }
@@ -358,6 +439,7 @@ fn print_text(s: &str) {
 mod selftest {
     use super::*;
     use alloc::vec::Vec;
+    use awkernel_llm::Event;
 
     const PROMPT: &str = "Explain how a CPU cache works in 3 concise sentences.";
 

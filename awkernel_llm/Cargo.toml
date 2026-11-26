@@ -15,3 +15,7 @@ std = []
 [[example]]
 name = "llm_cli"
 required-features = ["std"]
+
+[[example]]
+name = "tool_eval"
+required-features = ["std"]

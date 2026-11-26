@@ -99,7 +99,7 @@ fn executor_does_not_change_results() {
 }
 
 /// Runs the current turn to completion; returns generated tokens and the
-/// stop reason.
+/// stop reason (also for prefill-only turns).
 fn run_turn(chat: &mut Chat<'_>) -> (Vec<u32>, StopReason) {
     let mut gen = Vec::new();
     loop {
@@ -219,4 +219,141 @@ fn cancel_and_limits() {
             }
         }
     }
+}
+
+/// Rolling back to a mark restores the cache exactly: the same question
+/// asked again gives the same answer.
+#[test]
+fn rollback_restores_the_conversation() {
+    let Some(data) = model_bytes() else {
+        eprintln!("skipped: AWKERNEL_LLM_MODEL is not set");
+        return;
+    };
+    let model = Model::parse(&data).unwrap();
+    let cfg = ChatConfig {
+        max_seq: 256,
+        max_new_tokens: 5,
+        ..Default::default()
+    };
+    let mut chat = Chat::new(&model, cfg, Backend::detect()).unwrap();
+    chat.start_turn("Hi").unwrap();
+    run_turn(&mut chat);
+
+    let mark = chat.mark();
+    let len = chat.context_len();
+    chat.start_turn("Name a color.").unwrap();
+    let (first, _) = run_turn(&mut chat);
+    assert!(chat.rollback(&mark));
+    assert_eq!(chat.context_len(), len);
+    chat.start_turn("Name a color.").unwrap();
+    let (again, _) = run_turn(&mut chat);
+    assert_eq!(first, again);
+
+    // A mark taken before a clear is invalid.
+    chat.clear();
+    assert!(!chat.rollback(&mark));
+}
+
+/// The system turn stays cached across `clear()`.
+#[test]
+fn system_prompt_is_kept() {
+    let Some(data) = model_bytes() else {
+        eprintln!("skipped: AWKERNEL_LLM_MODEL is not set");
+        return;
+    };
+    let model = Model::parse(&data).unwrap();
+    let cfg = ChatConfig {
+        max_seq: 512,
+        max_new_tokens: 4,
+        ..Default::default()
+    };
+    let mut chat = Chat::new(&model, cfg, Backend::detect()).unwrap();
+    chat.set_system_prompt("<|im_start|>system\nYou are terse.<|im_end|>\n")
+        .unwrap();
+    assert!(chat.start_system().unwrap());
+    let (_, r) = run_turn(&mut chat);
+    assert_eq!(r, StopReason::Appended);
+    let sys_len = chat.context_len();
+    assert!(sys_len > 5);
+
+    chat.start_turn("Hi").unwrap();
+    run_turn(&mut chat);
+    chat.clear();
+    assert_eq!(chat.context_len(), sys_len);
+    // Not fed again.
+    assert!(!chat.start_system().unwrap());
+}
+
+/// The agent runs a tool, answers, and compacts the history to
+/// question + call + "(omitted)" + answer.
+#[test]
+fn agent_calls_tools_and_compacts() {
+    use awkernel_llm::{
+        router::Router,
+        tools::catalog::{IFCONFIG, INTERRUPT, NO_TOOL_EXAMPLES, PREAMBLE, TASK},
+        Agent, AgentConfig, AgentEvent, AgentStop,
+    };
+    let Some(data) = model_bytes() else {
+        eprintln!("skipped: AWKERNEL_LLM_MODEL is not set");
+        return;
+    };
+    let model = Model::parse(&data).unwrap();
+    let be = Backend::detect();
+    let chat = Chat::new(&model, ChatConfig::default(), be).unwrap();
+    let mut agent = Agent::new(chat, AgentConfig::default());
+    let tools = [TASK, INTERRUPT, IFCONFIG];
+    let router = Router::new(
+        &model,
+        &tools,
+        NO_TOOL_EXAMPLES,
+        be,
+        awkernel_llm::router::DEFAULT_LEN,
+    )
+    .unwrap();
+    agent
+        .set_tools(&tools, Some(PREAMBLE), Some(router))
+        .unwrap();
+    let exec = ScopedThreadExecutor { threads: 4 };
+
+    let calls = std::cell::RefCell::new(Vec::new());
+    let mut run = |name: &str| {
+        calls.borrow_mut().push(name.to_string());
+        (name == "ifconfig").then(|| "MAC address: 52:54:00:12:34:56".to_string())
+    };
+    agent.warm_up();
+    while agent.step(&exec, &mut run) != AgentEvent::Idle {}
+    let base = agent.chat().context_len();
+
+    agent
+        .ask("What is the MAC address of the network interface?")
+        .unwrap();
+    let mut answer = Vec::new();
+    let summary = loop {
+        match agent.step(&exec, &mut run) {
+            AgentEvent::Token(t) => answer.extend_from_slice(agent.chat().token_bytes(t)),
+            AgentEvent::Answered(s) => break s,
+            _ => {}
+        }
+    };
+    let during = agent.chat().context_len();
+    while agent.step(&exec, &mut run) != AgentEvent::Idle {}
+    let after = agent.chat().context_len();
+
+    assert_eq!(summary.stop, AgentStop::Answer);
+    assert_eq!(*calls.borrow(), ["ifconfig"]);
+    assert!(String::from_utf8_lossy(&answer).contains("52:54:00:12:34:56"));
+    // The compacted history is shorter than the turns with the tool output
+    // but keeps question, call and answer.
+    assert!(
+        after > base + 20 && after <= during,
+        "{base} {after} {during}"
+    );
+
+    // Cancelling forgets the question.
+    agent.ask("How many tasks are there?").unwrap();
+    for _ in 0..3 {
+        agent.step(&exec, &mut run);
+    }
+    agent.cancel();
+    assert_eq!(agent.chat().context_len(), after);
 }

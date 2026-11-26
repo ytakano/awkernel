@@ -40,6 +40,23 @@ pub const TOK_ASSISTANT: u32 = 77_091;
 pub const TOK_NL: u32 = 198;
 /// `"\n\n"`.
 pub const TOK_NL2: u32 = 271;
+pub const TOK_TOOL_CALL: u32 = 151_657;
+pub const TOK_TOOL_CALL_END: u32 = 151_658;
+pub const TOK_TOOL_RESPONSE: u32 = 151_665;
+pub const TOK_TOOL_RESPONSE_END: u32 = 151_666;
+
+/// Special tokens recognized by [`Tokenizer::encode_with_specials`].
+const SPECIALS: [u32; 9] = [
+    TOK_ENDOFTEXT,
+    TOK_IM_START,
+    TOK_IM_END,
+    TOK_THINK_START,
+    TOK_THINK_END,
+    TOK_TOOL_CALL,
+    TOK_TOOL_CALL_END,
+    TOK_TOOL_RESPONSE,
+    TOK_TOOL_RESPONSE_END,
+];
 
 pub struct Tokenizer<'a> {
     byte_to_tok: [u32; 256],
@@ -239,6 +256,92 @@ impl<'a> Tokenizer<'a> {
         self.encode(text, out)?;
         out.try_reserve(9).map_err(|_| Error::OutOfMemory)?;
         out.extend_from_slice(&[TOK_IM_END, TOK_NL, TOK_IM_START, TOK_ASSISTANT, TOK_NL]);
+        if !think {
+            out.extend_from_slice(&[TOK_THINK_START, TOK_NL2, TOK_THINK_END, TOK_NL2]);
+        }
+        Ok(())
+    }
+}
+
+impl Tokenizer<'_> {
+    /// Like [`Tokenizer::encode`], but the texts of the chat special tokens
+    /// (`<|im_start|>`, `<tool_call>`, ...) become those tokens, as the
+    /// Hugging Face tokenizer does. Only for trusted text such as our own
+    /// system prompt: in user or tool text this would allow injecting turns.
+    pub fn encode_with_specials(&self, text: &[u8], out: &mut Vec<u32>) -> Result<(), Error> {
+        let mut start = 0;
+        let mut i = 0;
+        while i < text.len() {
+            let special = (text[i] == b'<')
+                .then(|| {
+                    SPECIALS.iter().find(|&&t| {
+                        let b = self.token_bytes(t);
+                        !b.is_empty() && text[i..].starts_with(b)
+                    })
+                })
+                .flatten();
+            match special {
+                Some(&t) => {
+                    self.encode(&text[start..i], out)?;
+                    out.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+                    out.push(t);
+                    i += self.token_bytes(t).len();
+                    start = i;
+                }
+                None => i += 1,
+            }
+        }
+        self.encode(&text[start..], out)
+    }
+
+    /// Appends a tool result as the next user turn, followed by the
+    /// assistant header (Qwen3 template):
+    ///
+    /// ```text
+    /// <|im_start|>user\n<tool_response>\n{text}\n</tool_response><|im_end|>\n<|im_start|>assistant\n
+    /// ```
+    ///
+    /// plus the empty think block unless `think`. Special-token texts inside
+    /// `text` are *not* interpreted.
+    ///
+    /// The tool output is cut to `max_tokens` tokens (followed by
+    /// `... (truncated)`).
+    pub fn encode_tool_response_turn(
+        &self,
+        text: &[u8],
+        think: bool,
+        max_tokens: usize,
+        out: &mut Vec<u32>,
+    ) -> Result<(), Error> {
+        out.try_reserve(16).map_err(|_| Error::OutOfMemory)?;
+        out.extend_from_slice(&[TOK_IM_START, TOK_USER, TOK_NL, TOK_TOOL_RESPONSE]);
+        let mut body = Vec::new();
+        body.try_reserve(text.len() + 2)
+            .map_err(|_| Error::OutOfMemory)?;
+        body.push(b'\n');
+        // No token is shorter than one byte, and long outputs would make the
+        // O(n^2) BPE slow: cut the bytes first (at a UTF-8 boundary).
+        let mut cut = text.len().min(max_tokens.saturating_mul(8));
+        while cut > 0 && cut < text.len() && (text[cut] & 0xc0) == 0x80 {
+            cut -= 1;
+        }
+        body.extend_from_slice(&text[..cut]);
+        body.push(b'\n');
+        let start = out.len();
+        self.encode(&body, out)?;
+        if out.len() - start > max_tokens || cut < text.len() {
+            out.truncate(start + max_tokens.min(out.len() - start));
+            self.encode(b"\n... (truncated)\n", out)?;
+        }
+        out.try_reserve(14).map_err(|_| Error::OutOfMemory)?;
+        out.extend_from_slice(&[
+            TOK_TOOL_RESPONSE_END,
+            TOK_IM_END,
+            TOK_NL,
+            TOK_IM_START,
+            TOK_ASSISTANT,
+            TOK_NL,
+        ]);
         if !think {
             out.extend_from_slice(&[TOK_THINK_START, TOK_NL2, TOK_THINK_END, TOK_NL2]);
         }

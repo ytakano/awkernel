@@ -81,11 +81,44 @@ the service uses 4 CPUs (itself and 3 helpers). Measured on a Ryzen 9 5900HX:
 
 The answers are identical for any number of vCPUs.
 
+## Questions about the system (tools)
+
+The model can look at the running system through three read-only shell
+commands: `(task)`, `(interrupt)` and `(ifconfig)`. `(reboot)`, `(shutdown)`
+and `(netdump)` can never be run by the model.
+
+```text
+> (llm "What is the MAC address of the network interface?")
+[llm] -> ifconfig()
+The MAC address of the network interface is 52:54:00:12:34:56.
+[llm] 1 tool call; first token after 1.80 s (...), answer 22 tok ...
+```
+
+How it works (`awkernel_llm/src/agent.rs`):
+
+1. A router (the same model with a small classification prompt and its own
+   cache) decides from the question alone whether a tool is needed, and the
+   call is put into the conversation directly.
+2. The model answers and may call another tool (at most 2 calls per
+   question).
+3. Afterwards the tool output is removed from the conversation (it is
+   replaced by `(omitted)`), so the context does not fill up and later
+   questions call the tools again instead of using stale output.
+
+Ctrl-C forgets the question. Tool accuracy is measured on the host with
+`awkernel_llm/examples/tool_eval.rs` (30 system questions on two recorded
+system states, 12 general questions).
+
 ## Host-side checks
 
 ```sh
-# Engine unit tests and comparison with the llm.asm reference tokens.
+# Engine unit tests, comparison with the llm.asm reference tokens, and
+# conversation/agent tests.
 AWKERNEL_LLM_MODEL=/path/to/qwen3-0.6b-q8_0.asmbin make test
+
+# Tool-use evaluation (about 10 minutes).
+cargo run --release -p awkernel_llm --features std --example tool_eval -- \
+  -m /path/to/qwen3-0.6b-q8_0.asmbin -t 4
 
 # Run the engine as a host program.
 cargo run --release -p awkernel_llm --features std --example llm_cli -- \

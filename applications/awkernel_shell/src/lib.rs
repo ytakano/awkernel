@@ -22,6 +22,9 @@ use num_traits::ToPrimitive;
 const SERVICE_NAME: &str = "[Awkernel] shell";
 
 pub fn init() {
+    #[cfg(feature = "local_llm")]
+    register_llm_tools();
+
     let task_id = task::spawn(
         SERVICE_NAME.into(),
         console_handler(),
@@ -272,48 +275,58 @@ fn help_ffi() {
 
 #[embedded]
 fn task_ffi() {
-    let msg = format!("Uptime: {}\r\n", awkernel_async_lib::uptime(),);
-    console::print(&msg);
+    console::print(&task_text());
+}
 
-    print_tasks();
-
-    console::print("\r\n");
-
-    let msg = format!(
+/// Output of `(task)`.
+pub fn task_text() -> String {
+    let mut out = format!("Uptime: {}\r\n", awkernel_async_lib::uptime());
+    tasks_text(&mut out);
+    out.push_str("\r\n");
+    out.push_str(&format!(
         "Total preemption: {}\r\n",
         awkernel_async_lib::task::get_num_preemption(),
-    );
-    console::print(&msg);
-
-    console::print("Running Tasks:\r\n");
+    ));
+    out.push_str("Running Tasks:\r\n");
     for task in awkernel_async_lib::task::get_tasks_running().iter() {
-        let msg = if task.task_id != 0 {
-            format!("  cpu: {:>3}, task: {:>5}\r\n", task.cpu_id, task.task_id)
+        if task.task_id != 0 {
+            out.push_str(&format!(
+                "  cpu: {:>3}, task: {:>5}\r\n",
+                task.cpu_id, task.task_id
+            ));
         } else {
-            format!("  cpu: {:>3}, task:\r\n", task.cpu_id)
-        };
-        console::print(&msg);
+            out.push_str(&format!("  cpu: {:>3}, task:\r\n", task.cpu_id));
+        }
     }
+    out
 }
 
 #[embedded]
 fn interrupt_ffi() {
-    let handlers = awkernel_lib::interrupt::get_handlers();
+    console::print(&interrupt_text());
+}
 
-    console::print("IRQ Name\r\n");
-    for (k, v) in handlers.iter() {
-        let msg = format!("{k:>3} name: {v}\r\n");
-        console::print(&msg);
+/// Output of `(interrupt)`.
+pub fn interrupt_text() -> String {
+    let mut out = String::from("IRQ Name\r\n");
+    for (k, v) in awkernel_lib::interrupt::get_handlers().iter() {
+        out.push_str(&format!("{k:>3} name: {v}\r\n"));
     }
+    out
 }
 
 #[embedded]
 fn ifconfig_ffi() {
-    let ifs = awkernel_lib::net::get_all_interface();
-    for netif in ifs.iter() {
-        let msg = format!("{netif}\r\n\r\n");
-        console::print(&msg);
+    console::print(&ifconfig_text());
+}
+
+/// Output of `(ifconfig)`.
+pub fn ifconfig_text() -> String {
+    let mut out = String::new();
+    for netif in awkernel_lib::net::get_all_interface().iter() {
+        out.push_str(&format!("{netif}\r\n\r\n"));
     }
+    out
 }
 
 #[embedded]
@@ -403,24 +416,20 @@ fn perf_ffi() {
     }
 }
 
-fn print_tasks() {
-    let tasks = task::get_tasks();
-
-    console::print("Tasks:\r\n");
-
-    let msg = format!(
+fn tasks_text(out: &mut String) {
+    out.push_str("Tasks:\r\n");
+    out.push_str(&format!(
         "{:>5}  {:<10} {:>14} {:>14} name\r\n",
         "ID", "State", "#Preemption", "Last Executed"
-    );
-    console::print(&msg);
+    ));
 
-    for t in tasks {
+    for t in task::get_tasks() {
         let mut node = MCSNode::new();
         let info = t.info.lock(&mut node);
 
         let state = format!("{:?}", info.get_state());
 
-        let msg = format!(
+        out.push_str(&format!(
             "{:>5}{} {:<10} {:>14} {:>14} {}\r\n",
             t.id,
             if info.panicked() { "*" } else { " " },
@@ -428,9 +437,7 @@ fn print_tasks() {
             info.get_num_preemption(),
             info.get_last_executed().uptime().as_micros(),
             t.name,
-        );
-
-        console::print(&msg);
+        ));
     }
 }
 
@@ -467,4 +474,68 @@ fn llm_clear_ffi() {
 #[embedded]
 fn llm_think_ffi(on: bool) {
     llm_submit(local_llm::Request::Think(on));
+}
+
+/// Read-only commands the LLM may run while answering. `(reboot)`,
+/// `(shutdown)` and `(netdump)` are deliberately not registered (and
+/// `local_llm` refuses them).
+#[cfg(feature = "local_llm")]
+fn register_llm_tools() {
+    use local_llm::{
+        catalog,
+        tools::{register, Tool},
+    };
+
+    let tools = [
+        Tool {
+            spec: catalog::TASK,
+            run: task_tool_text,
+        },
+        Tool {
+            spec: catalog::INTERRUPT,
+            run: interrupt_text,
+        },
+        Tool {
+            spec: catalog::IFCONFIG,
+            run: ifconfig_text,
+        },
+    ];
+    for t in tools {
+        if let Err(e) = register(t) {
+            log::warn!("llm tool {}: {e}", t.spec.name);
+        }
+    }
+}
+
+/// `(task)` for the LLM, in a compact form (numbers cost many tokens): the
+/// per-CPU table and totals first, then one line per task without padding
+/// and timestamps.
+#[cfg(feature = "local_llm")]
+fn task_tool_text() -> String {
+    let mut out = String::from("Running tasks by CPU:\n");
+    for task in awkernel_async_lib::task::get_tasks_running().iter() {
+        if task.task_id != 0 {
+            out.push_str(&format!("cpu {}: task {}\n", task.cpu_id, task.task_id));
+        } else {
+            out.push_str(&format!("cpu {}: idle\n", task.cpu_id));
+        }
+    }
+    out.push_str(&format!(
+        "Uptime: {} us\nTotal preemption: {}\nTasks (ID, state, preemptions, name):\n",
+        awkernel_async_lib::uptime(),
+        awkernel_async_lib::task::get_num_preemption(),
+    ));
+    for t in task::get_tasks() {
+        let mut node = MCSNode::new();
+        let info = t.info.lock(&mut node);
+        out.push_str(&format!(
+            "{}, {:?}{}, {}, {}\n",
+            t.id,
+            info.get_state(),
+            if info.panicked() { " (panicked)" } else { "" },
+            info.get_num_preemption(),
+            t.name,
+        ));
+    }
+    out
 }

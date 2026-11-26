@@ -23,17 +23,21 @@
 
 extern crate alloc;
 
+pub mod agent;
 pub mod chat;
 pub mod cpu;
 pub mod exec;
 pub mod kernels;
 pub mod model;
 pub mod q8;
+pub mod router;
 pub mod sampler;
 pub mod tokenizer;
+pub mod tools;
 pub mod transformer;
 pub mod utf8;
 
+pub use agent::{Agent, AgentConfig, AgentEvent, AgentStop, Summary};
 pub use chat::{Chat, ChatConfig, Event, StopReason};
 pub use cpu::Backend;
 pub use exec::{Executor, InlineExecutor};
